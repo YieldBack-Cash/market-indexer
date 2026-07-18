@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+/dist
+/build
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Prisma
+/generated/prisma
+.prisma
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+notes*

@@ -49,6 +49,7 @@ async function applyFactoryEvent(
                         yt: decoded.market.yt,
                         pool: decoded.market.pool,
                         maturity: decoded.market.maturity,
+                        creator: decoded.creator,
                     },
                 });
                 break;
@@ -84,6 +85,18 @@ async function applyMarketEvent(
             where: { id: raw.id },
         });
         if (alreadyProcessed) return;
+
+        if (decoded.kind === "pool_init") {
+            await tx.market.update({
+                where: { id: marketId },
+                data: {
+                    currentApy: decoded.current_apy,
+                    apyMin: decoded.apy_min,
+                    apyMax: decoded.apy_max,
+                    feeApy: decoded.fee_apy,
+                },
+            });
+        }
 
         await tx.marketEvent.create({
             data: {

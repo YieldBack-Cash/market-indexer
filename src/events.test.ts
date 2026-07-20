@@ -1,6 +1,6 @@
 import { Keypair, nativeToScVal } from "@stellar/stellar-sdk";
 import type { rpc } from "@stellar/stellar-sdk";
-import { decodeFactoryEvent, Market } from "./events";
+import { decodeFactoryEvent, decodeAMMEvent, Market } from "./events";
 import { describe, it, expect } from "vitest";
 
 function addr(): string {
@@ -42,6 +42,7 @@ function fixtureEvent(
 
 describe("decodeFactoryEvent", () => {
     it("decodes market_created", () => {
+        const creator = addr();
         const vault = addr();
         const market: Market = {
             name: "Test Market",
@@ -58,6 +59,7 @@ describe("decodeFactoryEvent", () => {
                 nativeToScVal("market_created", {
                     type: "symbol",
                 }),
+                nativeToScVal(creator, { type: "address" }),
                 nativeToScVal(vault, { type: "address" }),
             ],
             marketScVal(market),
@@ -65,9 +67,35 @@ describe("decodeFactoryEvent", () => {
 
         expect(decodeFactoryEvent(event)).toEqual({
             kind: "market_created",
+            creator,
             vault,
             market,
         });
+    });
+
+    it("throws on pre-upgrade market_created layout (missing creator topic)", () => {
+        const vault = addr();
+        const market: Market = {
+            name: "Test Market",
+            ym: addr(),
+            pt: addr(),
+            yt: addr(),
+            pool: addr(),
+            maturity: 1234567890n,
+            vault,
+        };
+
+        const event = fixtureEvent(
+            [
+                nativeToScVal("market_created", { type: "symbol" }),
+                nativeToScVal(vault, { type: "address" }),
+            ],
+            marketScVal(market),
+        );
+
+        expect(() => decodeFactoryEvent(event)).toThrow(
+            /pre-upgrade event layout is not supported/,
+        );
     });
 
     it("decodes admin_changed", () => {
@@ -153,6 +181,84 @@ describe("decodeFactoryEvent", () => {
 
         expect(() => decodeFactoryEvent(event)).toThrow(
             /Unknown factory event/,
+        );
+    });
+});
+
+describe("decodeAMMEvent", () => {
+    const poolInitTypeSpec: ScValTypeSpec = {
+        expiry_ts: ["symbol", "u64"],
+        current_apy: ["symbol", "i128"],
+        apy_min: ["symbol", "i128"],
+        apy_max: ["symbol", "i128"],
+        fee_apy: ["symbol", "i128"],
+        scalar_root: ["symbol", "i128"],
+        fee_rate_root: ["symbol", "i128"],
+        last_implied_rate: ["symbol", "i128"],
+    };
+
+    it("decodes pool_init", () => {
+        const tokenA = addr();
+        const tokenB = addr();
+        const val = {
+            expiry_ts: 1234567890n,
+            current_apy: 500_000n,
+            apy_min: 0n,
+            apy_max: 10_000_000n,
+            fee_apy: 100_000n,
+            scalar_root: 123n,
+            fee_rate_root: 456n,
+            last_implied_rate: 789n,
+        };
+
+        const event = fixtureEvent(
+            [
+                nativeToScVal("pool_init", { type: "symbol" }),
+                nativeToScVal(tokenA, { type: "address" }),
+                nativeToScVal(tokenB, { type: "address" }),
+            ],
+            nativeToScVal(val, { type: poolInitTypeSpec }),
+        );
+
+        expect(decodeAMMEvent(event)).toEqual({
+            kind: "pool_init",
+            token_a: tokenA,
+            token_b: tokenB,
+            ...val,
+        });
+    });
+
+    it("throws on pre-upgrade pool_init layout (missing apy fields)", () => {
+        const tokenA = addr();
+        const tokenB = addr();
+        const legacyTypeSpec: ScValTypeSpec = {
+            expiry_ts: ["symbol", "u64"],
+            scalar_root: ["symbol", "i128"],
+            initial_anchor: ["symbol", "i128"],
+            fee_rate_root: ["symbol", "i128"],
+            last_implied_rate: ["symbol", "i128"],
+        };
+
+        const event = fixtureEvent(
+            [
+                nativeToScVal("pool_init", { type: "symbol" }),
+                nativeToScVal(tokenA, { type: "address" }),
+                nativeToScVal(tokenB, { type: "address" }),
+            ],
+            nativeToScVal(
+                {
+                    expiry_ts: 1234567890n,
+                    scalar_root: 123n,
+                    initial_anchor: 456n,
+                    fee_rate_root: 789n,
+                    last_implied_rate: 111n,
+                },
+                { type: legacyTypeSpec },
+            ),
+        );
+
+        expect(() => decodeAMMEvent(event)).toThrow(
+            /pre-upgrade event layout is not supported/,
         );
     });
 });

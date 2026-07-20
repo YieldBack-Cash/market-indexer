@@ -19,7 +19,12 @@ export interface WasmHashes {
 }
 
 export type DecodedFactoryEvent =
-    | { kind: "market_created"; vault: string; market: Market }
+    | {
+          kind: "market_created";
+          creator: string;
+          vault: string;
+          market: Market;
+      }
     | { kind: "admin_changed"; oldAdmin: string; newAdmin: string }
     | {
           kind: "wasm_hashes_updated";
@@ -86,8 +91,11 @@ export type DecodedAMMEvent =
           token_a: string;
           token_b: string;
           expiry_ts: bigint;
+          current_apy: bigint;
+          apy_min: bigint;
+          apy_max: bigint;
+          fee_apy: bigint;
           scalar_root: bigint;
-          initial_anchor: bigint;
           fee_rate_root: bigint;
           last_implied_rate: bigint;
       }
@@ -235,16 +243,37 @@ export function decodeAMMEvent(raw: rpc.Api.EventResponse): DecodedAMMEvent {
     if (name === "pool_init") {
         const val = scValToNative(raw.value) as {
             expiry_ts: bigint;
+            current_apy?: bigint;
+            apy_min?: bigint;
+            apy_max?: bigint;
+            fee_apy?: bigint;
             scalar_root: bigint;
-            initial_anchor: bigint;
             fee_rate_root: bigint;
             last_implied_rate: bigint;
         };
+        if (
+            val.current_apy === undefined ||
+            val.apy_min === undefined ||
+            val.apy_max === undefined ||
+            val.fee_apy === undefined
+        ) {
+            throw new Error(
+                `pool_init event at ledger ${raw.ledger} is missing apy fields ` +
+                    `(pre-upgrade event layout is not supported)`,
+            );
+        }
         return {
             kind: "pool_init",
             token_a: topics[1],
             token_b: topics[2],
-            ...val,
+            expiry_ts: val.expiry_ts,
+            current_apy: val.current_apy,
+            apy_min: val.apy_min,
+            apy_max: val.apy_max,
+            fee_apy: val.fee_apy,
+            scalar_root: val.scalar_root,
+            fee_rate_root: val.fee_rate_root,
+            last_implied_rate: val.last_implied_rate,
         };
     }
 
@@ -373,12 +402,20 @@ export function decodeFactoryEvent(
     const eventName = topics[0] as string;
 
     switch (eventName) {
-        case "market_created":
+        case "market_created": {
+            if (topics.length < 3) {
+                throw new Error(
+                    `market_created event at ledger ${raw.ledger} is missing the ` +
+                        `creator topic (pre-upgrade event layout is not supported)`,
+                );
+            }
             return {
                 kind: "market_created",
-                vault: topics[1] as string,
+                creator: topics[1] as string,
+                vault: topics[2] as string,
                 market: value as Market,
             };
+        }
         case "admin_changed":
             return {
                 kind: "admin_changed",

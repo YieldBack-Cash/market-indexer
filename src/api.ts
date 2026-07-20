@@ -2,11 +2,13 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { PrismaClient, Market } from "@prisma/client";
+import rateLimit from "express-rate-limit";
 
 const app = express();
 app.use(
     cors({ origin: process.env.FRONTEND_ORIGIN ?? "http://localhost:3000" }),
 );
+app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 const prisma = new PrismaClient();
 
 // Evaluated per request so `isActive` reflects the current time, not server

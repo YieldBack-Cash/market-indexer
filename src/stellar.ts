@@ -8,12 +8,31 @@ import {
     xdr,
     scValToNative,
     nativeToScVal,
+    Keypair,
 } from "@stellar/stellar-sdk";
-import { contract } from "@stellar/stellar-sdk/axios";
 
 const server = new rpc.Server(process.env.SOROBAN_RPC_URL!);
 const FACTORY_ADDRESS = process.env.FACTORY_CONTRACT_ADDRESS!;
 const PAGE_LIMIT = 1000;
+
+export async function getTokenSymbol(contractId: string): Promise<string> {
+    try {
+        const account = new Account(Keypair.random().publicKey(), "0");
+        const tx = new TransactionBuilder(account, {
+            fee: "100",
+            networkPassphrase: Networks.TESTNET,
+        })
+            .addOperation(new Contract(contractId).call("symbol"))
+            .setTimeout(30)
+            .build();
+        const result = await server.simulateTransaction(tx);
+        if (rpc.Api.isSimulationError(result)) return contractId.slice(0, 8);
+
+        return scValToNative(result.result!.retval) as string;
+    } catch {
+        return contractId.slice(0, 8);
+    }
+}
 
 export async function getCurrentLedger(): Promise<number> {
     const latest = await server.getLatestLedger();

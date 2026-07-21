@@ -9,7 +9,7 @@ import {
     DecodedAMMEvent,
     decodeAMMEvent,
 } from "./events";
-import { getCurrentLedger, getEventsFor } from "./stellar";
+import { getCurrentLedger, getEventsFor, getTokenSymbol } from "./stellar";
 
 const prisma = new PrismaClient();
 const FACTORY_ADDRESS = process.env.FACTORY_CONTRACT_ADDRESS!;
@@ -26,6 +26,10 @@ async function applyFactoryEvent(
     raw: rpc.Api.EventResponse,
     decoded: DecodedFactoryEvent,
 ) {
+    let vaultSymbol: string | undefined;
+    if (decoded.kind === "market_created") {
+        vaultSymbol = await getTokenSymbol(decoded.vault);
+    }
     await prisma.$transaction(async (tx) => {
         const alreadyProcessed = await tx.factoryEvent.findUnique({
             where: { id: raw.id },
@@ -34,6 +38,14 @@ async function applyFactoryEvent(
 
         switch (decoded.kind) {
             case "market_created": {
+                const maturityDate = new Date(
+                    Number(decoded.market.maturity) * 1000,
+                )
+                    .toISOString()
+                    .slice(0, 10);
+                const marketName =
+                    decoded.market.name ??
+                    `${vaultSymbol ?? decoded.vault.slice(0, 8)} - ${maturityDate}`;
                 await tx.vault.upsert({
                     where: { address: decoded.vault },
                     update: {},
@@ -43,9 +55,7 @@ async function applyFactoryEvent(
                     data: {
                         id: `${decoded.vault}:${decoded.market.maturity}`,
                         vault: decoded.vault,
-                        name:
-                            decoded.market.name ??
-                            `${decoded.vault.slice(0, 8)}:${decoded.market.maturity}`,
+                        name: marketName,
                         ym: decoded.market.ym,
                         pt: decoded.market.pt,
                         yt: decoded.market.yt,

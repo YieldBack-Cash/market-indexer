@@ -110,7 +110,7 @@ export async function syncEvents() {
 
     const startLedger = state.lastLedger
         ? state.lastLedger + 1
-        : await getCurrentLedger();
+        : Number(process.env.START_LEDGER ?? (await getCurrentLedger()));
 
     const markets = await prisma.market.findMany({
         select: { id: true, ym: true, pool: true },

@@ -43,7 +43,9 @@ async function applyFactoryEvent(
                     data: {
                         id: `${decoded.vault}:${decoded.market.maturity}`,
                         vault: decoded.vault,
-                        name: decoded.market.name,
+                        name:
+                            decoded.market.name ??
+                            `${decoded.vault.slice(0, 8)}:${decoded.market.maturity}`,
                         ym: decoded.market.ym,
                         pt: decoded.market.pt,
                         yt: decoded.market.yt,

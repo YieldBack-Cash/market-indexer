@@ -43,7 +43,7 @@ async function applyFactoryEvent(
                 )
                     .toISOString()
                     .slice(0, 10);
-                const marketName = `${vaultSymbol ?? decoded.vault.slice(0, 8)} - ${maturityDate}`;
+                const marketName = `${vaultSymbol ?? decoded.vault.slice(0, 8)}-${maturityDate}`;
                 await tx.vault.upsert({
                     where: { address: decoded.vault },
                     update: {},

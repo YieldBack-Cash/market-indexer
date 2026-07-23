@@ -9,7 +9,12 @@ import {
     DecodedAMMEvent,
     decodeAMMEvent,
 } from "./events";
-import { getCurrentLedger, getEventsFor, getTokenSymbol } from "./stellar";
+import {
+    getCurrentLedger,
+    getEventsFor,
+    getTokenSymbol,
+    getVaultUnderlyingSymbol,
+} from "./stellar";
 
 const prisma = new PrismaClient();
 const FACTORY_ADDRESS = process.env.FACTORY_CONTRACT_ADDRESS!;
@@ -28,7 +33,9 @@ async function applyFactoryEvent(
 ) {
     let vaultSymbol: string | undefined;
     if (decoded.kind === "market_created") {
-        vaultSymbol = await getTokenSymbol(decoded.vault);
+        vaultSymbol =
+            (await getVaultUnderlyingSymbol(decoded.vault)) ??
+            (await getTokenSymbol(decoded.vault));
     }
     await prisma.$transaction(async (tx) => {
         const alreadyProcessed = await tx.factoryEvent.findUnique({

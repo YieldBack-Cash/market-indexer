@@ -126,7 +126,7 @@ export async function snapshotVaultRates() {
         const rate = await getVaultExchangeRate(vault.address);
         if (rate === undefined) continue;
 
-        await prisma.vaultRateSnapshots.create({
+        await prisma.vaultRateSnapshot.create({
             data: {
                 vault: vault.address,
                 rate,

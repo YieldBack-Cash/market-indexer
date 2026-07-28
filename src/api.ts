@@ -43,6 +43,15 @@ app.get("/markets/:id/events", async (req, res) => {
     res.json(events);
 });
 
+app.get("/vaults/:address/rate-history", async (req, res) => {
+    const snapshots = await prisma.vaultRateSnapshot.findMany({
+        where: { vault: req.params.address },
+        orderBy: { timestamp: "asc" },
+        select: { rate: true, timestamp: true },
+    });
+    res.json(snapshots);
+});
+
 app.get("/vaults/:address/markets", async (req, res) => {
     const now = nowSecs();
     const markets = await prisma.market.findMany({

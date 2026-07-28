@@ -14,6 +14,7 @@ import {
     getEventsFor,
     getTokenSymbol,
     getVaultUnderlyingSymbol,
+    getVaultExchangeRate,
 } from "./stellar";
 
 const prisma = new PrismaClient();
@@ -116,6 +117,26 @@ async function applyMarketEvent(
             },
         });
     });
+}
+
+export async function snapshotVaultRates() {
+    const vaults = await prisma.vault.findMany({ select: { address: true } });
+
+    for (const vault of vaults) {
+        const rate = await getVaultExchangeRate(vault.address);
+        if (rate === undefined) continue;
+
+        await prisma.vaultRateSnapshots.create({
+            data: {
+                vault: vault.address,
+                rate,
+            },
+        });
+    }
+
+    console.log(
+        `[${new Date().toISOString()}] Snapshotted rates for ${vaults.length} vault(s)`,
+    );
 }
 
 export async function syncEvents() {

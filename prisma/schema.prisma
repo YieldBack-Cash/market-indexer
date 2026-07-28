@@ -60,3 +60,10 @@ model FactoryEvent {
   payload        Json
   createdAt      DateTime @default(now())
 }
+
+model VaultRateSnapshot {
+  id          String    @id @default(cuid())
+  vault       String
+  rate        Float
+  timestamp   DateTime  @default(now())
+}

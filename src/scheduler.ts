@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { Queue, Worker } from "bullmq";
-import { syncEvents } from "./indexer";
+import { syncEvents, snapshotVaultRates } from "./indexer";
 
 const connection = {
     host: "localhost",
@@ -8,6 +8,7 @@ const connection = {
 };
 
 const queue = new Queue("ybc-indexer", { connection });
+const snapshotQueue = new Queue("ybc-snapshot", { connection });
 
 const worker = new Worker(
     "ybc-indexer",
@@ -23,6 +24,18 @@ worker.on("failed", (job, err) => {
     console.error(`[sync failed] ${err.message}`);
 });
 
+const snapshotWorker = new Worker(
+    "ybc-snapshot",
+    async () => {
+        await snapshotVaultRates();
+    },
+    { connection },
+);
+
+snapshotWorker.on("failed", (job, err) => {
+    console.error(`[snapshot failed] ${err.message}`);
+});
+
 async function start() {
     await queue.add(
         "sync",
@@ -32,6 +45,15 @@ async function start() {
             removeOnComplete: true,
             attempts: 3,
             backoff: { type: "exponential", delay: 2000 },
+        },
+    );
+
+    await snapshotQueue.add(
+        "snapshot",
+        {},
+        {
+            repeat: { every: 3_600_000 },
+            removeOnComplete: true,
         },
     );
 

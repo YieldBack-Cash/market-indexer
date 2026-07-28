@@ -12,7 +12,6 @@ import {
 } from "@stellar/stellar-sdk";
 
 const server = new rpc.Server(process.env.SOROBAN_RPC_URL!);
-const FACTORY_ADDRESS = process.env.FACTORY_CONTRACT_ADDRESS!;
 const PAGE_LIMIT = 1000;
 
 export async function getTokenSymbol(contractId: string): Promise<string> {
@@ -53,6 +52,36 @@ export async function getVaultUnderlyingSymbol(
         const assetAddress = scValToNative(result.result!.retval) as string;
         const symbol = await getTokenSymbol(assetAddress);
         return symbol === "native" ? "XLM" : symbol;
+    } catch {
+        return undefined;
+    }
+}
+
+export async function getVaultExchangeRate(
+    vaultContractId: string,
+): Promise<number | undefined> {
+    try {
+        const account = new Account(Keypair.random().publicKey(), "0");
+        const tx = new TransactionBuilder(account, {
+            fee: "100",
+            networkPassphrase: Networks.TESTNET,
+        })
+            .addOperation(
+                new Contract(vaultContractId).call(
+                    "convert_to_assets",
+                    nativeToScVal(10_000_000, {
+                        type: "i128",
+                    }),
+                ),
+            )
+            .setTimeout(30)
+            .build();
+
+        const result = await server.simulateTransaction(tx);
+        if (rpc.Api.isSimulationError(result)) return undefined;
+
+        const assets = scValToNative(result.result!.retval) as bigint;
+        return Number(assets) / 1e7;
     } catch {
         return undefined;
     }

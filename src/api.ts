@@ -5,6 +5,9 @@ import { PrismaClient, Market } from "@prisma/client";
 import rateLimit from "express-rate-limit";
 
 const app = express();
+// Behind nginx, req.ip is the proxy's address unless we trust one hop — without
+// this the rate limiter buckets every client together.
+app.set("trust proxy", 1);
 app.use(
     cors({ origin: process.env.FRONTEND_ORIGIN ?? "http://localhost:3000" }),
 );
@@ -18,9 +21,17 @@ function nowSecs(): bigint {
 }
 
 function toMarketJson(market: Market, now: bigint) {
+    // res.json cannot serialize BigInt, and Market carries several (maturity,
+    // the apy columns), so stringify them all rather than naming each one.
+    const serialized = Object.fromEntries(
+        Object.entries(market).map(([key, value]) => [
+            key,
+            typeof value === "bigint" ? value.toString() : value,
+        ]),
+    );
+
     return {
-        ...market,
-        maturity: market.maturity.toString(),
+        ...serialized,
         isActive: market.maturity > now,
     };
 }
@@ -102,4 +113,5 @@ app.get("/vaults/:address/events", async (req, res) => {
     res.json(events);
 });
 
-app.listen(3001, () => console.log("YBC API running on :3001"));
+const PORT = Number(process.env.PORT ?? 3001);
+app.listen(PORT, () => console.log(`YBC API running on :${PORT}`));

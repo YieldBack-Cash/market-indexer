@@ -3,8 +3,8 @@ import { Queue, Worker } from "bullmq";
 import { syncEvents, snapshotVaultRates } from "./indexer";
 
 const connection = {
-    host: "localhost",
-    port: 6379,
+    host: process.env.REDIS_HOST ?? "localhost",
+    port: Number(process.env.REDIS_PORT ?? 6379),
 };
 
 const queue = new Queue("ybc-indexer", { connection });

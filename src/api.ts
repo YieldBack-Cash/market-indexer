@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import { PrismaClient, Market } from "@prisma/client";
 import rateLimit from "express-rate-limit";
+import { getTokenBalance } from "./stellar";
 
 const app = express();
 // Behind nginx, req.ip is the proxy's address unless we trust one hop — without
@@ -71,6 +72,37 @@ app.get("/vaults/:address/markets", async (req, res) => {
     });
 
     res.json(markets.map((m) => toMarketJson(m, now)));
+});
+
+app.get("/accounts/:address/balances", async (req, res) => {
+    const now = nowSecs();
+    const markets = await prisma.market.findMany({
+        where: {
+            maturity: {
+                gt: now
+            }
+        },
+        select: {
+            id: true,
+            pt: true,
+            yt: true
+        },
+    });
+
+    const balances = await Promise.all(markets.map(async (market) => {
+        const [ptBalance, ytBalance] = await Promise.all([
+            getTokenBalance(market.pt, req.params.address),
+            getTokenBalance(market.yt, req.params.address),
+        ]);
+
+        return {
+            marketId: market.id,
+            ptBalance: (ptBalance ?? 0n).toString(),
+            ytBalance: (ytBalance ?? 0n).toString(),
+        };
+    }),);
+
+    res.json(balances);
 });
 
 app.get("/vaults", async (req, res) => {

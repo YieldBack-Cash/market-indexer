@@ -87,6 +87,32 @@ export async function getVaultExchangeRate(
     }
 }
 
+export async function getTokenBalance(
+    contractId: string,
+    accountId: string,
+): Promise<bigint | undefined> {
+    try {
+        const account = new Account(Keypair.random().publicKey(), "0");
+        const tx = new TransactionBuilder(account, {
+            fee: "100",
+            networkPassphrase: Networks.TESTNET,
+        })
+            .addOperation(
+                new Contract(contractId).call(
+                    "balance",
+                    nativeToScVal(accountId, { type: "address" }),
+                ),
+        ).setTimeout(30).build();
+        const result = await server.simulateTransaction(tx);
+
+        if (rpc.Api.isSimulationError(result)) return undefined;
+
+        return scValToNative(result.result!.retval) as bigint;
+    } catch {
+        return undefined;
+    }
+}
+
 export async function getCurrentLedger(): Promise<number> {
     const latest = await server.getLatestLedger();
     return latest.sequence;

@@ -1,0 +1,15 @@
+-- AlterTable
+ALTER TABLE "Vault" ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ADD COLUMN     "underlyingSymbol" TEXT,
+ADD COLUMN     "underlyingAsset" TEXT,
+ADD COLUMN     "pool" TEXT,
+ADD COLUMN     "displayName" TEXT,
+ADD COLUMN     "protocolName" TEXT,
+ADD COLUMN     "protocolLogoUrl" TEXT,
+ADD COLUMN     "protocolWebsite" TEXT,
+ADD COLUMN     "protocolDocsUrl" TEXT,
+ADD COLUMN     "protocolAuditUrl" TEXT,
+ADD COLUMN     "description" TEXT,
+ADD COLUMN     "riskText" TEXT,
+ADD COLUMN     "curatedAt" TIMESTAMP(3),
+ADD COLUMN     "curationNote" TEXT;

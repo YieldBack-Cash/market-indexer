@@ -33,28 +33,56 @@ export async function getTokenSymbol(contractId: string): Promise<string> {
     }
 }
 
-export async function getVaultUnderlyingSymbol(
-    vaultContractId: string,
-): Promise<string | undefined> {
+// Simulates a read-only call, returning the decoded value, or undefined when the
+// contract doesn't implement the method (or the simulation fails outright).
+async function simulateCall<T>(
+    contractId: string,
+    method: string,
+): Promise<T | undefined> {
     try {
         const account = new Account(Keypair.random().publicKey(), "0");
         const tx = new TransactionBuilder(account, {
             fee: "100",
             networkPassphrase: Networks.TESTNET,
         })
-            .addOperation(new Contract(vaultContractId).call("asset"))
+            .addOperation(new Contract(contractId).call(method))
             .setTimeout(30)
             .build();
         const result = await server.simulateTransaction(tx);
-
         if (rpc.Api.isSimulationError(result)) return undefined;
 
-        const assetAddress = scValToNative(result.result!.retval) as string;
-        const symbol = await getTokenSymbol(assetAddress);
-        return symbol === "native" ? "XLM" : symbol;
+        return scValToNative(result.result!.retval) as T;
     } catch {
         return undefined;
     }
+}
+
+export type VaultUnderlying = { assetAddress: string; symbol: string };
+
+// SEP-56 vaults (the interface YBC integrates with) expose `query_asset`; some
+// older vaults expose `asset`. Try the standard name first so both keep working.
+export async function getVaultUnderlying(
+    vaultContractId: string,
+): Promise<VaultUnderlying | undefined> {
+    const assetAddress =
+        (await simulateCall<string>(vaultContractId, "query_asset")) ??
+        (await simulateCall<string>(vaultContractId, "asset"));
+    if (!assetAddress) return undefined;
+
+    const symbol = await getTokenSymbol(assetAddress);
+    return { assetAddress, symbol: symbol === "native" ? "XLM" : symbol };
+}
+
+// The pool the vault lends into, from get_config() -> (pool, asset). Vaults that
+// don't implement it simply have no pool recorded.
+export async function getVaultPool(
+    vaultContractId: string,
+): Promise<string | undefined> {
+    const config = await simulateCall<[string, string]>(
+        vaultContractId,
+        "get_config",
+    );
+    return config?.[0];
 }
 
 export async function getVaultExchangeRate(

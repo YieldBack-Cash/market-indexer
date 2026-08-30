@@ -8,6 +8,7 @@
         "start": "node dist/scheduler.js",
         "dev": "tsx src/scheduler.ts",
         "api": "tsx src/api.ts",
+        "curate": "tsx src/curate.ts",
         "test": "vitest run"
     },
     "keywords": [],

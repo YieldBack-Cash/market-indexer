@@ -8,6 +8,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model IndexerState {
@@ -20,28 +21,50 @@ model Vault {
   address   String   @id
   markets   Market[]
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Indexed from chain, best-effort — the indexer owns these, never hand-edited.
+  underlyingSymbol String?
+  underlyingAsset  String?
+  pool             String?
+
+  // Curated: filled in when vetting the vault and the protocol it lends to.
+  displayName      String?
+  protocolName     String?
+  protocolLogoUrl  String?
+  protocolWebsite  String?
+  protocolDocsUrl  String?
+  protocolAuditUrl String?
+  description      String?
+  riskText         String?
+  curatedAt        DateTime?
+  curationNote     String?
 }
 
 model Market {
-  id         String   @id
-  vault      String
-  name       String
-  ym         String
-  pt         String
-  yt         String
-  pool       String
-  maturity   BigInt
-  creator    String?
-  verified   Boolean  @default(false)
-  currentApy BigInt?
-  apyMin     BigInt?
-  apyMax     BigInt?
-  feeApy     BigInt?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  vaultRef   Vault    @relation(fields: [vault], references: [address])
+  id           String    @id
+  vault        String
+  name         String
+  ym           String
+  pt           String
+  yt           String
+  pool         String
+  maturity     BigInt
+  creator      String?
+  verified     Boolean   @default(false)
+  listed       Boolean   @default(false)
+  curatedAt    DateTime?
+  curationNote String?
+  currentApy   BigInt?
+  apyMin       BigInt?
+  apyMax       BigInt?
+  feeApy       BigInt?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  vaultRef     Vault     @relation(fields: [vault], references: [address])
 
   @@index([creator])
+  @@index([listed, maturity])
 }
 
 model MarketEvent {
@@ -69,8 +92,8 @@ model FactoryEvent {
 }
 
 model VaultRateSnapshot {
-  id          String    @id @default(cuid())
-  vault       String
-  rate        Float
-  timestamp   DateTime  @default(now())
+  id        String   @id @default(cuid())
+  vault     String
+  rate      Float
+  timestamp DateTime @default(now())
 }

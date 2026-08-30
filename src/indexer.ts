@@ -13,7 +13,8 @@ import {
     getCurrentLedger,
     getEventsFor,
     getTokenSymbol,
-    getVaultUnderlyingSymbol,
+    getVaultUnderlying,
+    getVaultPool,
     getVaultExchangeRate,
 } from "./stellar";
 
@@ -32,11 +33,23 @@ async function applyFactoryEvent(
     raw: rpc.Api.EventResponse,
     decoded: DecodedFactoryEvent,
 ) {
+    // Resolved outside the transaction: these are network round-trips, and all
+    // of them are best-effort — a vault that answers nothing must still index.
     let vaultSymbol: string | undefined;
+    let vaultMeta: {
+        underlyingSymbol?: string;
+        underlyingAsset?: string;
+        pool?: string;
+    } = {};
     if (decoded.kind === "market_created") {
+        const underlying = await getVaultUnderlying(decoded.vault);
         vaultSymbol =
-            (await getVaultUnderlyingSymbol(decoded.vault)) ??
-            (await getTokenSymbol(decoded.vault));
+            underlying?.symbol ?? (await getTokenSymbol(decoded.vault));
+        vaultMeta = {
+            underlyingSymbol: underlying?.symbol,
+            underlyingAsset: underlying?.assetAddress,
+            pool: await getVaultPool(decoded.vault),
+        };
     }
     await prisma.$transaction(async (tx) => {
         const alreadyProcessed = await tx.factoryEvent.findUnique({
@@ -52,10 +65,12 @@ async function applyFactoryEvent(
                     .toISOString()
                     .slice(0, 10);
                 const marketName = `${vaultSymbol ?? decoded.vault.slice(0, 8)}-${maturityDate}`;
+                // Written on update too, so a vault indexed before these
+                // columns existed gets backfilled on its next market.
                 await tx.vault.upsert({
                     where: { address: decoded.vault },
-                    update: {},
-                    create: { address: decoded.vault },
+                    update: vaultMeta,
+                    create: { address: decoded.vault, ...vaultMeta },
                 });
                 await tx.market.create({
                     data: {

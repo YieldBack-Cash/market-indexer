@@ -1,9 +1,11 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { PrismaClient, Market } from "@prisma/client";
+import { PrismaClient, Market, Vault } from "@prisma/client";
 import rateLimit from "express-rate-limit";
 import { getTokenBalance } from "./stellar";
+import { marketWhere, MARKET_ORDER } from "./curation";
+import { adminRouter } from "./admin";
 
 const app = express();
 // Behind nginx, req.ip is the proxy's address unless we trust one hop — without
@@ -12,13 +14,24 @@ app.set("trust proxy", 1);
 app.use(
     cors({ origin: process.env.FRONTEND_ORIGIN ?? "http://localhost:3000" }),
 );
-app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 const prisma = new PrismaClient();
+
+// Mounted ahead of the public limiter: a bulk curation session would other-
+// wise burn the 60/min public budget. The admin router brings its own.
+app.use("/admin", adminRouter(prisma));
+
+app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 
 // Evaluated per request so `isActive` reflects the current time, not server
 // boot time.
 function nowSecs(): bigint {
     return BigInt(Math.floor(Date.now() / 1000));
+}
+
+// The project has no validation library; this matches the hand-rolled parsing
+// already used for the `limit` query param below.
+function boolParam(value: unknown): boolean {
+    return value === "true" || value === "1";
 }
 
 function toMarketJson(market: Market, now: bigint) {
@@ -31,17 +44,35 @@ function toMarketJson(market: Market, now: bigint) {
         ]),
     );
 
+    // Curation notes are internal review copy — never expose them publicly.
+    delete serialized.curationNote;
+
     return {
         ...serialized,
         isActive: market.maturity > now,
     };
 }
 
+type VaultWithMarkets = Vault & { markets?: Market[] };
+
+function toVaultJson(vault: VaultWithMarkets, now: bigint) {
+    const { curationNote, markets, ...rest } = vault;
+
+    return {
+        ...rest,
+        ...(markets === undefined
+            ? {}
+            : { markets: markets.map((m) => toMarketJson(m, now)) }),
+    };
+}
+
 app.get("/markets", async (req, res) => {
     const now = nowSecs();
     const markets = await prisma.market.findMany({
-        where: { maturity: { gt: now } },
-        orderBy: { maturity: "asc" },
+        where: marketWhere(now, {
+            includeExpired: boolParam(req.query.includeExpired),
+        }),
+        orderBy: MARKET_ORDER,
     });
 
     res.json(markets.map((m) => toMarketJson(m, now)));
@@ -67,21 +98,23 @@ app.get("/vaults/:address/rate-history", async (req, res) => {
 app.get("/vaults/:address/markets", async (req, res) => {
     const now = nowSecs();
     const markets = await prisma.market.findMany({
-        where: { vault: req.params.address },
-        orderBy: { maturity: "asc" },
+        where: {
+            ...marketWhere(now, {
+                includeExpired: boolParam(req.query.includeExpired),
+            }),
+            vault: req.params.address,
+        },
+        orderBy: MARKET_ORDER,
     });
 
     res.json(markets.map((m) => toMarketJson(m, now)));
 });
 
 app.get("/accounts/:address/balances", async (req, res) => {
-    const now = nowSecs();
+    // Deliberately unfiltered by maturity: PT/YT in a matured market is
+    // exactly what the holder still needs to see in order to redeem it.
     const markets = await prisma.market.findMany({
-        where: {
-            maturity: {
-                gt: now
-            }
-        },
+        where: { listed: true },
         select: {
             id: true,
             pt: true,
@@ -108,15 +141,29 @@ app.get("/accounts/:address/balances", async (req, res) => {
 app.get("/vaults", async (req, res) => {
     const now = nowSecs();
     const vaults = await prisma.vault.findMany({
-        include: { markets: true },
+        include: {
+            markets: { where: marketWhere(now), orderBy: MARKET_ORDER },
+        },
     });
 
-    res.json(
-        vaults.map((vault) => ({
-            ...vault,
-            markets: vault.markets.map((m) => toMarketJson(m, now)),
-        })),
-    );
+    res.json(vaults.map((vault) => toVaultJson(vault, now)));
+});
+
+// Single vault with its curated metadata. The market details page needs this
+// given only a `market.vault` address, and a 404 distinguishes an unknown
+// vault from one that simply has no listed markets.
+app.get("/vaults/:address", async (req, res) => {
+    const now = nowSecs();
+    const vault = await prisma.vault.findUnique({
+        where: { address: req.params.address },
+        include: {
+            markets: { where: marketWhere(now), orderBy: MARKET_ORDER },
+        },
+    });
+
+    if (!vault) return res.status(404).json({ error: "vault not found" });
+
+    res.json(toVaultJson(vault, now));
 });
 
 app.get("/status", async (req, res) => {

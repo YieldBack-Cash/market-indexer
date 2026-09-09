@@ -373,12 +373,19 @@ export function decodeFactoryEvent(
     const eventName = topics[0] as string;
 
     switch (eventName) {
-        case "market_created":
+        case "market_created": {
+            // The vault comes from the event's data, not a topic. MarketCreated
+            // gained a `creator` topic ahead of `vault`, which silently shifted
+            // topics[1] from the vault to the creator and keyed whole markets
+            // under an account address. The data payload carries `vault` in
+            // both the old and new event shapes, so it cannot drift again.
+            const market = value as Market;
             return {
                 kind: "market_created",
-                vault: topics[1] as string,
-                market: value as Market,
+                vault: market.vault,
+                market,
             };
+        }
         case "admin_changed":
             return {
                 kind: "admin_changed",

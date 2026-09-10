@@ -190,21 +190,35 @@ export async function syncEvents() {
     for (const raw of rawEvents) {
         highestLedger = Math.max(highestLedger, raw.ledger);
         const contractId = raw.contractId!.contractId();
-        if (contractId === FACTORY_ADDRESS) {
-            await applyFactoryEvent(raw, decodeFactoryEvent(raw));
-        } else if (ymToMarket.has(contractId)) {
-            await applyMarketEvent(
-                raw,
-                "ym",
-                decodeYmEvent(raw),
-                ymToMarket.get(contractId)!,
-            );
-        } else if (poolToMarket.has(contractId)) {
-            await applyMarketEvent(
-                raw,
-                "amm",
-                decodeAMMEvent(raw),
-                poolToMarket.get(contractId)!,
+        // One event this build cannot decode must not stop the indexer. It used
+        // to: the throw escaped syncEvents before lastLedger was saved, so every
+        // poll re-fetched the same events and failed on the same one, forever,
+        // while systemd still reported the service healthy. A contract can add
+        // an event at any time, so treat that as routine and keep going.
+        // Skipping loses that one event; halting loses all of them.
+        try {
+            if (contractId === FACTORY_ADDRESS) {
+                await applyFactoryEvent(raw, decodeFactoryEvent(raw));
+            } else if (ymToMarket.has(contractId)) {
+                await applyMarketEvent(
+                    raw,
+                    "ym",
+                    decodeYmEvent(raw),
+                    ymToMarket.get(contractId)!,
+                );
+            } else if (poolToMarket.has(contractId)) {
+                await applyMarketEvent(
+                    raw,
+                    "amm",
+                    decodeAMMEvent(raw),
+                    poolToMarket.get(contractId)!,
+                );
+            }
+        } catch (err) {
+            console.error(
+                `[skipped event] ledger ${raw.ledger} ${contractId}: ${
+                    err instanceof Error ? err.message : String(err)
+                }`,
             );
         }
     }

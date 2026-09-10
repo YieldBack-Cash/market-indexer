@@ -146,6 +146,11 @@ export type DecodedAMMEvent =
           amount_b: bigint;
           new_reserve_a: bigint;
           new_reserve_b: bigint;
+      }
+    | {
+          kind: "reserve_fee_paid";
+          treasury: string;
+          amount: bigint;
       };
 
 export function decodeYmEvent(raw: rpc.Api.EventResponse): DecodedYmEvent {
@@ -359,6 +364,10 @@ export function decodeAMMEvent(raw: rpc.Api.EventResponse): DecodedAMMEvent {
                 new_reserve_a,
                 new_reserve_b,
             };
+        }
+        case "reserve_fee_paid": {
+            const [amount] = value;
+            return { kind: "reserve_fee_paid", treasury: topics[1], amount };
         }
         default:
             throw new Error(`Unknown AMM event: ${name}`);

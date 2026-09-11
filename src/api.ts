@@ -138,6 +138,26 @@ app.get("/accounts/:address/balances", async (req, res) => {
     res.json(balances);
 });
 
+// One wallet's own activity across every market, newest first: the market events
+// whose payload names it. The AMM's swaps and LP events use `to`, the YM's split /
+// combine / redeem use `from`, its flash (YT) legs and claims use `user` / `to`.
+// Powers the frontend's Positions history; without it the app has to pull every
+// market's full feed and filter client-side.
+app.get("/accounts/:address/events", async (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    const address = req.params.address;
+    const events = await prisma.marketEvent.findMany({
+        where: {
+            OR: ["to", "from", "user"].map((key) => ({
+                payload: { path: [key], equals: address },
+            })),
+        },
+        orderBy: { ledger: "desc" },
+        take: limit,
+    });
+    res.json(events);
+});
+
 app.get("/vaults", async (req, res) => {
     const now = nowSecs();
     const vaults = await prisma.vault.findMany({

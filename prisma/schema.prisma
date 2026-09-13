@@ -42,26 +42,32 @@ model Vault {
 }
 
 model Market {
-  id           String    @id
-  vault        String
-  name         String
-  ym           String
-  pt           String
-  yt           String
-  pool         String
-  maturity     BigInt
-  creator      String?
-  verified     Boolean   @default(false)
-  listed       Boolean   @default(false)
-  curatedAt    DateTime?
-  curationNote String?
-  currentApy   BigInt?
-  apyMin       BigInt?
-  apyMax       BigInt?
-  feeApy       BigInt?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  vaultRef     Vault     @relation(fields: [vault], references: [address])
+  id                String    @id
+  vault             String
+  name              String
+  ym                String
+  pt                String
+  yt                String
+  pool              String
+  maturity          BigInt
+  creator           String?
+  verified          Boolean   @default(false)
+  listed            Boolean   @default(false)
+  curatedAt         DateTime?
+  curationNote      String?
+  currentApy        BigInt?
+  apyMin            BigInt?
+  apyMax            BigInt?
+  feeApy            BigInt?
+  // Treasury's share of each trade's fee, 1e7-scaled; from pool_init.
+  reserveFeeRate    BigInt?
+  // 7-day trailing realized LP fee APY, 1e7-scaled, simple (not compounded).
+  // Null until the pool has emitted fee-carrying trades.
+  lpFeeApy          BigInt?
+  lpFeeApyUpdatedAt DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  vaultRef          Vault     @relation(fields: [vault], references: [address])
 
   @@index([creator])
   @@index([listed, maturity])

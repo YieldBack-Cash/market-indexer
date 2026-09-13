@@ -85,6 +85,13 @@ export async function getVaultPool(
     return config?.[0];
 }
 
+// The treasury's share of each trade's fee (1e7-scaled), fixed at pool creation.
+export async function getPoolReserveFeeRate(
+    poolContractId: string,
+): Promise<bigint | undefined> {
+    return simulateCall<bigint>(poolContractId, "get_reserve_fee_rate");
+}
+
 export async function getVaultExchangeRate(
     vaultContractId: string,
 ): Promise<number | undefined> {

@@ -1,6 +1,6 @@
 import { Keypair, nativeToScVal } from "@stellar/stellar-sdk";
 import type { rpc } from "@stellar/stellar-sdk";
-import { decodeFactoryEvent, Market } from "./events";
+import { decodeAMMEvent, decodeFactoryEvent, Market } from "./events";
 import { describe, it, expect } from "vitest";
 
 function addr(): string {
@@ -154,5 +154,107 @@ describe("decodeFactoryEvent", () => {
         expect(() => decodeFactoryEvent(event)).toThrow(
             /Unknown factory event/,
         );
+    });
+});
+
+describe("decodeAMMEvent", () => {
+    const i128s = (values: bigint[]) =>
+        nativeToScVal(values, { type: "i128" });
+
+    it("decodes pool_init with the creator params", () => {
+        const tokenA = addr();
+        const tokenB = addr();
+        const treasury = addr();
+        const fields = {
+            expiry_ts: 1820448000n,
+            current_apy: 1_000_000n,
+            apy_min: 200_000n,
+            apy_max: 2_000_000n,
+            fee_apy: 100_000n,
+            scalar_root: 243_024_958n,
+            fee_rate_root: 99_503n,
+            last_implied_rate: 953_102n,
+            reserve_fee_rate: 1_000_000n,
+        };
+        const i128: ScValTypeSpec = ["symbol", "i128"];
+        const event = fixtureEvent(
+            [
+                nativeToScVal("pool_init", { type: "symbol" }),
+                nativeToScVal(tokenA, { type: "address" }),
+                nativeToScVal(tokenB, { type: "address" }),
+            ],
+            nativeToScVal(
+                { ...fields, treasury },
+                {
+                    type: {
+                        expiry_ts: ["symbol", "u64"],
+                        current_apy: i128,
+                        apy_min: i128,
+                        apy_max: i128,
+                        fee_apy: i128,
+                        scalar_root: i128,
+                        fee_rate_root: i128,
+                        last_implied_rate: i128,
+                        reserve_fee_rate: i128,
+                        treasury: ["symbol", "address"],
+                    },
+                },
+            ),
+        );
+
+        expect(decodeAMMEvent(event)).toEqual({
+            kind: "pool_init",
+            token_a: tokenA,
+            token_b: tokenB,
+            ...fields,
+            treasury,
+        });
+    });
+
+    it("decodes a swap carrying fee and reserve_fee", () => {
+        const to = addr();
+        const event = fixtureEvent(
+            [
+                nativeToScVal("swap_pt_for_v", { type: "symbol" }),
+                nativeToScVal(to, { type: "address" }),
+            ],
+            i128s([100n, 90n, 953_102n, 1100n, 910n, 5n, 1n]),
+        );
+
+        expect(decodeAMMEvent(event)).toEqual({
+            kind: "swap_pt_for_v",
+            to,
+            pt_in: 100n,
+            v_out: 90n,
+            new_implied_rate: 953_102n,
+            new_reserve_a: 1100n,
+            new_reserve_b: 910n,
+            fee: 5n,
+            reserve_fee: 1n,
+        });
+    });
+
+    it("decodes a swap from older wasm without the fee fields", () => {
+        const receiver = addr();
+        const user = addr();
+        const event = fixtureEvent(
+            [
+                nativeToScVal("flash_swap_v", { type: "symbol" }),
+                nativeToScVal(receiver, { type: "address" }),
+                nativeToScVal(user, { type: "address" }),
+            ],
+            i128s([100n, 95n, 953_102n, 900n, 1095n]),
+        );
+
+        expect(decodeAMMEvent(event)).toEqual({
+            kind: "flash_swap_v",
+            receiver,
+            user,
+            pt_borrowed: 100n,
+            v_owed: 95n,
+            new_implied_rate: 953_102n,
+            new_reserve_a: 900n,
+            new_reserve_b: 1095n,
+        });
     });
 });

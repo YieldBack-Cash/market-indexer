@@ -50,11 +50,11 @@ Two behaviours worth internalising:
 ## Wire types
 
 Every `BigInt` column is serialized as a **string** (`maturity`, `currentApy`, `apyMin`,
-`apyMax`, `feeApy`). `curationNote` is stripped from all public responses — it is internal
+`apyMax`, `feeApy`, `reserveFeeRate`, `lpFeeApy`). `curationNote` is stripped from all public responses — it is internal
 review copy and will never appear.
 
 `IndexerMarket` currently carries more than the frontend type declares — `creator`, `verified`,
-`listed`, `curatedAt`, and the four apy columns are all present on the wire:
+`listed`, `curatedAt`, and the apy/fee columns are all present on the wire:
 
 ```ts
 export interface IndexerMarket {
@@ -66,9 +66,34 @@ export interface IndexerMarket {
   creator: string | null; curatedAt: string | null;
   currentApy: string | null; apyMin: string | null;
   apyMax: string | null; feeApy: string | null;
+  reserveFeeRate: string | null;
+  lpFeeApy: string | null; lpFeeApyUpdatedAt: string | null;
   createdAt: string; updatedAt: string;
 }
 ```
+
+### APY and fee fields
+
+All rates are **1e7-scaled**: `100000` = 1%. Two of them are easy to confuse:
+
+| Field | Meaning | Source |
+|---|---|---|
+| `currentApy`, `apyMin`, `apyMax` | the creator's opening rate and trading band | the pool's `pool_init` event |
+| `feeApy` | the pool's **fee setting**: the trading fee as an annualized rate spread. It decays to zero at maturity. **Not** what LPs earn | `pool_init` |
+| `reserveFeeRate` | treasury's share of each trade's fee (`1000000` = 10% of the fee) | `pool_init` |
+| `lpFeeApy` | **realized** LP fee yield: the LPs' share of fees over the trailing 7 days, divided by pool TVL, annualized (simple, not compounded). Label it "7d fee APY" | computed hourly; `lpFeeApyUpdatedAt` says when |
+
+`lpFeeApy` is `null` for pools that have never traded, for matured markets, and for every pool
+deployed from AMM wasm older than the trade-fee event fields (all markets created before that
+upgrade). Show a blank, not zero. A pool younger than 7 days is annualized over its real
+history, never over less than a day, so expect it to be noisy early on.
+
+### Trade event payloads
+
+AMM trade events (`swap_v_for_pt`, `swap_pt_for_v`, `flash_swap_pt`, `flash_swap_v`) from
+newer pools carry two extra fields, both in vault shares as strings: `fee` (the whole trading
+fee) and `reserve_fee` (the treasury's cut). LPs keep `fee - reserve_fee`. Both are absent on
+events from older pools.
 
 `IndexerVault` is what needs extending — today the frontend declares only
 `{ address, createdAt, markets }`:

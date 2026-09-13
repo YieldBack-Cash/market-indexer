@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { Queue, Worker } from "bullmq";
-import { syncEvents, snapshotVaultRates } from "./indexer";
+import { syncEvents, snapshotVaultRates, updateLpFeeApys } from "./indexer";
 
 const connection = {
     host: process.env.REDIS_HOST ?? "localhost",
@@ -28,6 +28,8 @@ const snapshotWorker = new Worker(
     "ybc-snapshot",
     async () => {
         await snapshotVaultRates();
+        // Right after the snapshot, so the APY uses the freshest vault rate.
+        await updateLpFeeApys();
     },
     { connection },
 );

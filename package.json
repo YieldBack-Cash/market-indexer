@@ -9,6 +9,7 @@
         "dev": "tsx src/scheduler.ts",
         "api": "tsx src/api.ts",
         "curate": "tsx src/curate.ts",
+        "backfill-params": "tsx src/backfill-market-params.ts",
         "test": "vitest run"
     },
     "keywords": [],

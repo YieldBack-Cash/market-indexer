@@ -80,18 +80,38 @@ export type DecodedYmEvent =
           exchange_rate: bigint;
       };
 
+// Trailing fields on every AMM trade event, in vault shares: the whole trading
+// fee and the treasury's cut of it (LPs keep the difference). Pools deployed
+// from AMM wasm older than these fields omit both, so they stay optional.
+export type TradeFees = { fee?: bigint; reserve_fee?: bigint };
+
+// The fields sit after the fixed ones, so the same positional decode reads both
+// old and new event shapes: on an old shape the two slots are just past the end.
+function tradeFees(value: bigint[], offset: number): TradeFees {
+    return value.length > offset + 1
+        ? { fee: value[offset], reserve_fee: value[offset + 1] }
+        : {};
+}
+
 export type DecodedAMMEvent =
     | {
           kind: "pool_init";
           token_a: string;
           token_b: string;
           expiry_ts: bigint;
+          // Creator-supplied market params, 1e7-scaled APYs.
+          current_apy: bigint;
+          apy_min: bigint;
+          apy_max: bigint;
+          fee_apy: bigint;
+          // Curve params derived from them.
           scalar_root: bigint;
-          initial_anchor: bigint;
           fee_rate_root: bigint;
           last_implied_rate: bigint;
+          treasury: string;
+          reserve_fee_rate: bigint;
       }
-    | {
+    | ({
           kind: "swap_v_for_pt";
           to: string;
           v_in: bigint;
@@ -99,8 +119,8 @@ export type DecodedAMMEvent =
           new_implied_rate: bigint;
           new_reserve_a: bigint;
           new_reserve_b: bigint;
-      }
-    | {
+      } & TradeFees)
+    | ({
           kind: "swap_pt_for_v";
           to: string;
           pt_in: bigint;
@@ -108,8 +128,8 @@ export type DecodedAMMEvent =
           new_implied_rate: bigint;
           new_reserve_a: bigint;
           new_reserve_b: bigint;
-      }
-    | {
+      } & TradeFees)
+    | ({
           kind: "flash_swap_pt";
           receiver: string;
           user: string;
@@ -118,8 +138,8 @@ export type DecodedAMMEvent =
           new_implied_rate: bigint;
           new_reserve_a: bigint;
           new_reserve_b: bigint;
-      }
-    | {
+      } & TradeFees)
+    | ({
           kind: "flash_swap_v";
           receiver: string;
           user: string;
@@ -128,7 +148,7 @@ export type DecodedAMMEvent =
           new_implied_rate: bigint;
           new_reserve_a: bigint;
           new_reserve_b: bigint;
-      }
+      } & TradeFees)
     | {
           kind: "deposit";
           to: string;
@@ -238,13 +258,11 @@ export function decodeAMMEvent(raw: rpc.Api.EventResponse): DecodedAMMEvent {
     const name = topics[0] as string;
 
     if (name === "pool_init") {
-        const val = scValToNative(raw.value) as {
-            expiry_ts: bigint;
-            scalar_root: bigint;
-            initial_anchor: bigint;
-            fee_rate_root: bigint;
-            last_implied_rate: bigint;
-        };
+        // Map-shaped data (not vec), so fields are read by name.
+        const val = scValToNative(raw.value) as Omit<
+            Extract<DecodedAMMEvent, { kind: "pool_init" }>,
+            "kind" | "token_a" | "token_b"
+        >;
         return {
             kind: "pool_init",
             token_a: topics[1],
@@ -271,6 +289,7 @@ export function decodeAMMEvent(raw: rpc.Api.EventResponse): DecodedAMMEvent {
                 new_implied_rate,
                 new_reserve_a,
                 new_reserve_b,
+                ...tradeFees(value, 5),
             };
         }
         case "swap_pt_for_v": {
@@ -289,6 +308,7 @@ export function decodeAMMEvent(raw: rpc.Api.EventResponse): DecodedAMMEvent {
                 new_implied_rate,
                 new_reserve_a,
                 new_reserve_b,
+                ...tradeFees(value, 5),
             };
         }
         case "flash_swap_pt": {
@@ -308,6 +328,7 @@ export function decodeAMMEvent(raw: rpc.Api.EventResponse): DecodedAMMEvent {
                 new_implied_rate,
                 new_reserve_a,
                 new_reserve_b,
+                ...tradeFees(value, 5),
             };
         }
         case "flash_swap_v": {
@@ -327,6 +348,7 @@ export function decodeAMMEvent(raw: rpc.Api.EventResponse): DecodedAMMEvent {
                 new_implied_rate,
                 new_reserve_a,
                 new_reserve_b,
+                ...tradeFees(value, 5),
             };
         }
         case "deposit": {

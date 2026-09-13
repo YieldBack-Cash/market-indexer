@@ -143,6 +143,9 @@ app.get("/accounts/:address/balances", async (req, res) => {
 // combine / redeem use `from`, its flash (YT) legs and claims use `user` / `to`.
 // Powers the frontend's Positions history; without it the app has to pull every
 // market's full feed and filter client-side.
+// TODO: the payload JSON-path filter has no index, so this scans every MarketEvent row.
+// Fine at testnet volume; if it gets slow, add expression indexes on
+// payload->>'to' / 'from' / 'user' (raw SQL migration, Prisma can't express them).
 app.get("/accounts/:address/events", async (req, res) => {
     const limit = Math.min(Number(req.query.limit) || 200, 500);
     const address = req.params.address;

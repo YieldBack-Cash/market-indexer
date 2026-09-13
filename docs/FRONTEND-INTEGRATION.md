@@ -32,6 +32,7 @@ defaults in `app/providers.tsx` (`staleTime: 10s`, `refetchInterval: 30s`, `retr
 | `GET /vaults/:address/rate-history` | `{rate, timestamp}[]` | hourly snapshots |
 | `GET /vaults/:address/events` | factory events for the vault | |
 | `GET /accounts/:address/balances` | `{marketId, ptBalance, ytBalance}[]` | **includes expired** |
+| `GET /accounts/:address/events` | market events naming the wallet, newest first | across all markets; `?limit=N` (default 200, max 500) |
 | `GET /status` | `{lastPolled, lastLedger}` | |
 | `GET /events` | factory events | `?limit=N`, capped at 500 |
 

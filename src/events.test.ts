@@ -1,6 +1,6 @@
 import { Keypair, nativeToScVal } from "@stellar/stellar-sdk";
 import type { rpc } from "@stellar/stellar-sdk";
-import { decodeAMMEvent, decodeFactoryEvent, Market } from "./events";
+import { decodeAMMEvent, decodeFactoryEvent, decodeYmEvent, Market } from "./events";
 import { describe, it, expect } from "vitest";
 
 function addr(): string {
@@ -154,6 +154,50 @@ describe("decodeFactoryEvent", () => {
         expect(() => decodeFactoryEvent(event)).toThrow(
             /Unknown factory event/,
         );
+    });
+});
+
+describe("decodeYmEvent", () => {
+    const i128s = (values: bigint[]) => nativeToScVal(values, { type: "i128" });
+
+    // field order is the contract struct's, yield_manager/src/events.rs
+    it("decodes deposit_asset, the app's Split", () => {
+        const from = addr();
+        const event = fixtureEvent(
+            [nativeToScVal("deposit_asset", { type: "symbol" }), nativeToScVal(from, { type: "address" })],
+            i128s([200_000_000_000n, 97_556_543_23n, 199_999_996_13n, 20_500_931n]),
+        );
+
+        expect(decodeYmEvent(event)).toEqual({
+            kind: "deposit_asset",
+            from,
+            asset_in: 200_000_000_000n,
+            shares_in: 97_556_543_23n,
+            mint_amount: 199_999_996_13n,
+            exchange_rate: 20_500_931n,
+        });
+    });
+
+    it("decodes redeem_to_asset, the app's Combine and Redeem", () => {
+        const from = addr();
+        const event = fixtureEvent(
+            [nativeToScVal("redeem_to_asset", { type: "symbol" }), nativeToScVal(from, { type: "address" })],
+            i128s([1_000_000_000n, 487_000_000n, 998_000_000n, 20_500_000n]),
+        );
+
+        expect(decodeYmEvent(event)).toEqual({
+            kind: "redeem_to_asset",
+            from,
+            burned: 1_000_000_000n,
+            shares_redeemed: 487_000_000n,
+            asset_out: 998_000_000n,
+            exchange_rate: 20_500_000n,
+        });
+    });
+
+    it("still throws on a topic it doesn't know", () => {
+        const event = fixtureEvent([nativeToScVal("something_new", { type: "symbol" })], i128s([1n]));
+        expect(() => decodeYmEvent(event)).toThrow(/Unknown YM Event/);
     });
 });
 

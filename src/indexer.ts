@@ -24,6 +24,7 @@ import {
     RESERVE_KINDS,
     TRADE_KINDS,
 } from "./fees";
+import { alreadyApplied, UNDECODED, undecodedPayload } from "./undecoded";
 
 const prisma = new PrismaClient();
 const FACTORY_ADDRESS = process.env.FACTORY_CONTRACT_ADDRESS!;
@@ -59,10 +60,8 @@ async function applyFactoryEvent(
         };
     }
     await prisma.$transaction(async (tx) => {
-        const alreadyProcessed = await tx.factoryEvent.findUnique({
-            where: { id: raw.id },
-        });
-        if (alreadyProcessed) return;
+        const existing = await tx.factoryEvent.findUnique({ where: { id: raw.id } });
+        if (await alreadyApplied(existing, () => tx.factoryEvent.delete({ where: { id: raw.id } }))) return;
 
         switch (decoded.kind) {
             case "market_created": {
@@ -96,6 +95,7 @@ async function applyFactoryEvent(
             case "admin_changed":
             case "wasm_hashes_updated":
             case "contract_upgraded":
+            case "fee_config_updated":
                 break;
         }
 
@@ -120,10 +120,8 @@ export async function applyMarketEvent(
     marketId: string,
 ) {
     await prisma.$transaction(async (tx) => {
-        const alreadyProcessed = await tx.marketEvent.findUnique({
-            where: { id: raw.id },
-        });
-        if (alreadyProcessed) return;
+        const existing = await tx.marketEvent.findUnique({ where: { id: raw.id } });
+        if (await alreadyApplied(existing, () => tx.marketEvent.delete({ where: { id: raw.id } }))) return;
 
         await tx.marketEvent.create({
             data: {
@@ -153,6 +151,58 @@ export async function applyMarketEvent(
             });
         }
     });
+}
+
+/**
+ * Decode `raw`, or store it undecoded and return null. `into` is where a
+ * market event belongs; null means the factory.
+ */
+async function decodeOrRecord<T>(
+    raw: rpc.Api.EventResponse,
+    decode: (raw: rpc.Api.EventResponse) => T,
+    into: { source: "ym" | "amm"; market: string } | null,
+): Promise<T | null> {
+    try {
+        return decode(raw);
+    } catch (err) {
+        console.error(
+            `[undecoded event] ledger ${raw.ledger} ${raw.contractId!.contractId()}: ${
+                err instanceof Error ? err.message : String(err)
+            } (stored raw)`,
+        );
+        await recordUndecoded(raw, err, into).catch((dbErr) =>
+            console.error(`[undecoded event] could not store ${raw.id}: ${dbErr}`),
+        );
+        return null;
+    }
+}
+
+export async function recordUndecoded(
+    raw: rpc.Api.EventResponse,
+    err: unknown,
+    into: { source: "ym" | "amm"; market: string } | null,
+) {
+    const common = {
+        id: raw.id,
+        ledger: raw.ledger,
+        ledgerClosedAt: new Date(raw.ledgerClosedAt),
+        type: UNDECODED,
+        txHash: raw.txHash,
+        payload: undecodedPayload(raw, err),
+    };
+    // skipDuplicates-style: a replay must not overwrite an event that has
+    // since been decoded, and must not fail on one already stored raw
+    if (into) {
+        const existing = await prisma.marketEvent.findUnique({ where: { id: raw.id } });
+        if (existing) return;
+        await prisma.marketEvent.create({
+            data: { ...common, source: into.source, contractId: raw.contractId!.contractId(), market: into.market },
+        });
+    } else {
+        const existing = await prisma.factoryEvent.findUnique({ where: { id: raw.id } });
+        if (existing) return;
+        await prisma.factoryEvent.create({ data: { ...common, vault: null } });
+    }
 }
 
 export async function snapshotVaultRates() {
@@ -312,10 +362,13 @@ export async function syncEvents() {
         // poll re-fetched the same events and failed on the same one, forever,
         // while systemd still reported the service healthy. A contract can add
         // an event at any time, so treat that as routine and keep going.
-        // Skipping loses that one event; halting loses all of them.
+        // Skipping loses that one event; halting loses all of them. So an event
+        // that won't decode is kept raw (see recordUndecoded) and the loop moves
+        // on; a failure applying a decoded one is transient and only logged.
         try {
             if (contractId === FACTORY_ADDRESS) {
-                const decoded = decodeFactoryEvent(raw);
+                const decoded = await decodeOrRecord(raw, decodeFactoryEvent, null);
+                if (!decoded) return;
                 await applyFactoryEvent(raw, decoded);
                 if (decoded.kind === "market_created") {
                     created.push({
@@ -326,19 +379,13 @@ export async function syncEvents() {
                     });
                 }
             } else if (ymToMarket.has(contractId)) {
-                await applyMarketEvent(
-                    raw,
-                    "ym",
-                    decodeYmEvent(raw),
-                    ymToMarket.get(contractId)!,
-                );
+                const market = ymToMarket.get(contractId)!;
+                const decoded = await decodeOrRecord(raw, decodeYmEvent, { source: "ym", market });
+                if (decoded) await applyMarketEvent(raw, "ym", decoded, market);
             } else if (poolToMarket.has(contractId)) {
-                await applyMarketEvent(
-                    raw,
-                    "amm",
-                    decodeAMMEvent(raw),
-                    poolToMarket.get(contractId)!,
-                );
+                const market = poolToMarket.get(contractId)!;
+                const decoded = await decodeOrRecord(raw, decodeAMMEvent, { source: "amm", market });
+                if (decoded) await applyMarketEvent(raw, "amm", decoded, market);
             }
         } catch (err) {
             console.error(

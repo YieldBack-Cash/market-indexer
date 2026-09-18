@@ -26,7 +26,8 @@ export type DecodedFactoryEvent =
           old_hashes: WasmHashes;
           new_hashes: WasmHashes;
       }
-    | { kind: "contract_upgraded"; new_wasm_hash: string };
+    | { kind: "contract_upgraded"; new_wasm_hash: string }
+    | { kind: "fee_config_updated"; old_config: unknown; new_config: unknown };
 
 export type DecodedYmEvent =
     | {
@@ -78,7 +79,32 @@ export type DecodedYmEvent =
           v_owed: bigint;
           v_to_user: bigint;
           exchange_rate: bigint;
-      };
+      }
+    // The base-asset paths the app actually uses. deposit_asset is the router's
+    // zap_asset_for_split (the Split form); redeem_to_asset is its
+    // zap_split_for_asset (Combine, which burns PT and YT) and
+    // exit_expired_to_asset (Redeem after maturity, which burns PT only). The
+    // event doesn't say which redemption it was: the contract only allows a
+    // combine before maturity and a principal redeem after, so the event's
+    // time against the market's maturity does.
+    | {
+          kind: "deposit_asset";
+          from: string;
+          asset_in: bigint;
+          shares_in: bigint;
+          mint_amount: bigint;
+          exchange_rate: bigint;
+      }
+    | {
+          kind: "redeem_to_asset";
+          from: string;
+          burned: bigint;
+          shares_redeemed: bigint;
+          asset_out: bigint;
+          exchange_rate: bigint;
+      }
+    | { kind: "pool_set"; pool: string }
+    | { kind: "surplus_collected"; treasury: string; amount: bigint };
 
 // Trailing fields on every AMM trade event, in vault shares: the whole trading
 // fee and the treasury's cut of it (LPs keep the difference). Pools deployed
@@ -247,6 +273,37 @@ export function decodeYmEvent(raw: rpc.Api.EventResponse): DecodedYmEvent {
                 v_to_user,
                 exchange_rate,
             };
+        }
+        case "deposit_asset": {
+            const [asset_in, shares_in, mint_amount, exchange_rate] = value;
+            return {
+                kind: "deposit_asset",
+                from: topics[1],
+                asset_in,
+                shares_in,
+                mint_amount,
+                exchange_rate,
+            };
+        }
+        case "redeem_to_asset": {
+            const [burned, shares_redeemed, asset_out, exchange_rate] = value;
+            return {
+                kind: "redeem_to_asset",
+                from: topics[1],
+                burned,
+                shares_redeemed,
+                asset_out,
+                exchange_rate,
+            };
+        }
+        // Setup and treasury bookkeeping: nothing a wallet did, but decoding
+        // them keeps them out of the skipped-event log, where they would bury
+        // a genuinely unknown event.
+        case "pool_set":
+            return { kind: "pool_set", pool: topics[1] };
+        case "surplus_collected": {
+            const [amount] = value;
+            return { kind: "surplus_collected", treasury: topics[1], amount };
         }
         default:
             throw new Error(`Unknown YM Event: ${topics[0]}`);
@@ -433,6 +490,12 @@ export function decodeFactoryEvent(
             return {
                 kind: "contract_upgraded",
                 new_wasm_hash: value.new_wasm_hash,
+            };
+        case "fee_config_updated":
+            return {
+                kind: "fee_config_updated",
+                old_config: value.old_config,
+                new_config: value.new_config,
             };
         default:
             throw new Error(`Unknown factory event: ${eventName}`);

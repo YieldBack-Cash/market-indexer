@@ -1,10 +1,10 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { PrismaClient, Market, Vault } from "@prisma/client";
+import { PrismaClient, Market, Vault, Protocol } from "@prisma/client";
 import rateLimit from "express-rate-limit";
 import { getTokenBalance } from "./stellar";
-import { marketWhere, MARKET_ORDER } from "./curation";
+import { marketWhere, MARKET_ORDER, flattenProtocol } from "./curation";
 import { adminRouter } from "./admin";
 
 const app = express();
@@ -53,13 +53,20 @@ function toMarketJson(market: Market, now: bigint) {
     };
 }
 
-type VaultWithMarkets = Vault & { markets?: Market[] };
+type VaultWithRelations = Vault & {
+    protocol: Protocol | null;
+    markets?: Market[];
+};
 
-function toVaultJson(vault: VaultWithMarkets, now: bigint) {
-    const { curationNote, markets, ...rest } = vault;
+// The protocol lives in its own table but is served flat on the vault
+// (`protocolName`, `protocolLogoUrl`, ...) — that is the shape the frontend
+// was built against, and nothing about the split needs to reach it.
+function toVaultJson(vault: VaultWithRelations, now: bigint) {
+    const { curationNote, protocol, markets, ...rest } = vault;
 
     return {
         ...rest,
+        ...flattenProtocol(protocol),
         ...(markets === undefined
             ? {}
             : { markets: markets.map((m) => toMarketJson(m, now)) }),
@@ -165,6 +172,7 @@ app.get("/vaults", async (req, res) => {
     const now = nowSecs();
     const vaults = await prisma.vault.findMany({
         include: {
+            protocol: true,
             markets: { where: marketWhere(now), orderBy: MARKET_ORDER },
         },
     });
@@ -180,6 +188,7 @@ app.get("/vaults/:address", async (req, res) => {
     const vault = await prisma.vault.findUnique({
         where: { address: req.params.address },
         include: {
+            protocol: true,
             markets: { where: marketWhere(now), orderBy: MARKET_ORDER },
         },
     });

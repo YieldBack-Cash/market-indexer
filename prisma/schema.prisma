@@ -28,17 +28,37 @@ model Vault {
   underlyingAsset  String?
   pool             String?
 
-  // Curated: filled in when vetting the vault and the protocol it lends to.
-  displayName      String?
-  protocolName     String?
-  protocolLogoUrl  String?
-  protocolWebsite  String?
-  protocolDocsUrl  String?
-  protocolAuditUrl String?
-  description      String?
-  riskText         String?
-  curatedAt        DateTime?
-  curationNote     String?
+  // Curated: filled in when vetting the vault. The protocol it lends into is a
+  // row of its own — one protocol deploys a vault per asset, so its details
+  // are shared rather than retyped (and drifting) per vault.
+  displayName  String?
+  description  String?
+  riskText     String?
+  protocolId   String?
+  protocol     Protocol? @relation(fields: [protocolId], references: [id])
+  curatedAt    DateTime?
+  curationNote String?
+
+  @@index([protocolId])
+}
+
+// A yield protocol (Blend v2, XOXNO, ...). Entirely curated — nothing on chain
+// names the protocol behind a vault. `id` is a human slug chosen by the curator
+// and typed on the command line, so it is versioned where the protocol is:
+// `blendv2` today, `blendv3` when that ships.
+model Protocol {
+  id        String   @id
+  vaults    Vault[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  name         String
+  logoUrl      String?
+  website      String?
+  docsUrl      String?
+  auditUrl     String?
+  curatedAt    DateTime?
+  curationNote String?
 }
 
 model Market {

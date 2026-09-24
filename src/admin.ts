@@ -5,8 +5,14 @@ import { timingSafeEqual } from "node:crypto";
 import {
     setListed,
     isNotFound,
+    isAlreadyExists,
+    isUnknownProtocol,
+    isProtocolSlug,
     parseVaultMetadata,
     setVaultMetadata,
+    parseProtocolMetadata,
+    createProtocol,
+    setProtocolMetadata,
 } from "./curation";
 
 const MAX_NOTE_LENGTH = 500;
@@ -31,15 +37,26 @@ function requireAdminKey(req: Request, res: Response, next: NextFunction) {
     next();
 }
 
-function toAdminJson(market: Record<string, unknown>) {
+function toAdminJson(row: Record<string, unknown>) {
     // Curation notes stay on this side of the wall, but BigInt still needs
     // stringifying before res.json touches it.
     return Object.fromEntries(
-        Object.entries(market).map(([key, value]) => [
+        Object.entries(row).map(([key, value]) => [
             key,
             typeof value === "bigint" ? value.toString() : value,
         ]),
     );
+}
+
+// `note` rides along on every curation write. Returns the 400 message, or
+// null when the note is absent or acceptable.
+function noteError(note: unknown): string | null {
+    if (note === undefined) return null;
+    if (typeof note !== "string") return "`note` must be a string";
+    if (note.length > MAX_NOTE_LENGTH) {
+        return `\`note\` exceeds ${MAX_NOTE_LENGTH} chars`;
+    }
+    return null;
 }
 
 export function adminRouter(prisma: PrismaClient): Router {
@@ -74,14 +91,8 @@ export function adminRouter(prisma: PrismaClient): Router {
                 .status(400)
                 .json({ error: "`listed` must be a boolean" });
         }
-        if (note !== undefined && typeof note !== "string") {
-            return res.status(400).json({ error: "`note` must be a string" });
-        }
-        if (typeof note === "string" && note.length > MAX_NOTE_LENGTH) {
-            return res
-                .status(400)
-                .json({ error: `\`note\` exceeds ${MAX_NOTE_LENGTH} chars` });
-        }
+        const badNote = noteError(note);
+        if (badNote) return res.status(400).json({ error: badNote });
 
         try {
             const market = await setListed(prisma, req.params.id, listed, note);
@@ -97,6 +108,7 @@ export function adminRouter(prisma: PrismaClient): Router {
     router.get("/vaults", async (req, res) => {
         const vaults = await prisma.vault.findMany({
             orderBy: { createdAt: "desc" },
+            include: { protocol: true },
         });
 
         res.json(vaults.map(toAdminJson));
@@ -109,14 +121,8 @@ export function adminRouter(prisma: PrismaClient): Router {
         }
 
         const { note } = req.body ?? {};
-        if (note !== undefined && typeof note !== "string") {
-            return res.status(400).json({ error: "`note` must be a string" });
-        }
-        if (typeof note === "string" && note.length > MAX_NOTE_LENGTH) {
-            return res
-                .status(400)
-                .json({ error: `\`note\` exceeds ${MAX_NOTE_LENGTH} chars` });
-        }
+        const badNote = noteError(note);
+        if (badNote) return res.status(400).json({ error: badNote });
 
         try {
             const vault = await setVaultMetadata(
@@ -129,6 +135,84 @@ export function adminRouter(prisma: PrismaClient): Router {
         } catch (err) {
             if (isNotFound(err)) {
                 return res.status(404).json({ error: "vault not found" });
+            }
+            if (isUnknownProtocol(err)) {
+                return res.status(400).json({
+                    error: `no protocol with id \`${parsed.value.protocolId}\` — create it first`,
+                });
+            }
+            throw err;
+        }
+    });
+
+    router.get("/protocols", async (_req, res) => {
+        const protocols = await prisma.protocol.findMany({
+            orderBy: { id: "asc" },
+            include: { _count: { select: { vaults: true } } },
+        });
+
+        res.json(protocols.map(toAdminJson));
+    });
+
+    // Creation is its own verb rather than an upsert on PATCH, so a typo in
+    // the slug is a 404 and not a silent second protocol.
+    router.post("/protocols", async (req, res) => {
+        const { id, note, ...fields } = req.body ?? {};
+
+        if (typeof id !== "string" || !isProtocolSlug(id)) {
+            return res.status(400).json({
+                error: "`id` must be a slug: lowercase letters, digits and dashes, e.g. `blendv2`",
+            });
+        }
+        const parsed = parseProtocolMetadata(fields);
+        if (!parsed.ok) {
+            return res.status(400).json({ error: parsed.error });
+        }
+        if (typeof parsed.value.name !== "string") {
+            return res.status(400).json({ error: "`name` is required" });
+        }
+        const badNote = noteError(note);
+        if (badNote) return res.status(400).json({ error: badNote });
+
+        try {
+            const protocol = await createProtocol(
+                prisma,
+                id,
+                { ...parsed.value, name: parsed.value.name },
+                note,
+            );
+            res.status(201).json(toAdminJson(protocol));
+        } catch (err) {
+            if (isAlreadyExists(err)) {
+                return res
+                    .status(409)
+                    .json({ error: `protocol \`${id}\` already exists` });
+            }
+            throw err;
+        }
+    });
+
+    router.patch("/protocols/:id", async (req, res) => {
+        const parsed = parseProtocolMetadata(req.body ?? {});
+        if (!parsed.ok) {
+            return res.status(400).json({ error: parsed.error });
+        }
+
+        const { note } = req.body ?? {};
+        const badNote = noteError(note);
+        if (badNote) return res.status(400).json({ error: badNote });
+
+        try {
+            const protocol = await setProtocolMetadata(
+                prisma,
+                req.params.id,
+                parsed.value,
+                note,
+            );
+            res.json(toAdminJson(protocol));
+        } catch (err) {
+            if (isNotFound(err)) {
+                return res.status(404).json({ error: "protocol not found" });
             }
             throw err;
         }

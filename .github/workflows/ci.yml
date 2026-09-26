@@ -1,0 +1,84 @@
+# Two jobs. `app` is what a developer runs before pushing: Prisma client,
+# typecheck, tests. `contract-checks` proves the copies this service keeps of
+# contract knowledge are current: the event layouts generated from the
+# contract binaries and the vendored protocol file. Those need the contracts
+# repo built beside this one, so that job checks it out and builds it.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  STELLAR_CLI: "25.2.0"
+
+jobs:
+  app:
+    name: typecheck and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+
+  contract-checks:
+    name: generated layouts and protocol copy are current
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out market-indexer
+        uses: actions/checkout@v4
+        with:
+          path: market-indexer
+
+      - name: Check out ybc-contracts beside it
+        uses: actions/checkout@v4
+        with:
+          repository: YieldBack-Cash/ybc-contracts
+          path: ybc-contracts
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.91.1"
+          targets: wasm32v1-none
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ybc-contracts
+
+      - name: Install Stellar CLI ${{ env.STELLAR_CLI }}
+        run: |
+          mkdir -p "$HOME/.stellar-cli"
+          curl -sSL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI}/stellar-cli-${STELLAR_CLI}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$HOME/.stellar-cli"
+          echo "$HOME/.stellar-cli" >> "$GITHUB_PATH"
+
+      - name: Build contracts
+        working-directory: ybc-contracts
+        run: stellar contract build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: market-indexer/package-lock.json
+      - run: npm ci
+        working-directory: market-indexer
+      - run: npx prisma generate
+        working-directory: market-indexer
+
+      - name: Event layouts match the contract binaries
+        working-directory: market-indexer
+        run: npm run check:events
+
+      - name: Protocol file matches the master
+        working-directory: market-indexer
+        run: npm run check:protocol

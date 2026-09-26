@@ -4,7 +4,9 @@ import type { rpc } from "@stellar/stellar-sdk";
 import {
     DecodedFactoryEvent,
     decodeFactoryEvent,
+    DecodedRouterEvent,
     DecodedYmEvent,
+    decodeRouterEvent,
     decodeYmEvent,
     DecodedAMMEvent,
     decodeAMMEvent,
@@ -28,6 +30,9 @@ import { alreadyApplied, UNDECODED, undecodedPayload } from "./undecoded";
 
 const prisma = new PrismaClient();
 const FACTORY_ADDRESS = process.env.FACTORY_CONTRACT_ADDRESS!;
+// The router is optional: without it the history is rebuilt from the yield
+// manager's and pool's events alone, as it was before the router was indexed.
+const ROUTER_ADDRESS = process.env.ROUTER_CONTRACT_ADDRESS || null;
 
 function toJsonSafe(value: unknown): Prisma.InputJsonValue {
     return JSON.parse(
@@ -92,7 +97,9 @@ async function applyFactoryEvent(
                 });
                 break;
             }
-            case "admin_changed":
+            case "ownership_transfer":
+            case "ownership_transfer_completed":
+            case "ownership_renounced":
             case "wasm_hashes_updated":
             case "contract_upgraded":
             case "fee_config_updated":
@@ -113,10 +120,13 @@ async function applyFactoryEvent(
     });
 }
 
+/** Which contract a market event came from; the `MarketEvent.source` column. */
+export type EventSource = "ym" | "amm" | "router";
+
 export async function applyMarketEvent(
     raw: rpc.Api.EventResponse,
-    source: "ym" | "amm",
-    decoded: DecodedYmEvent | DecodedAMMEvent,
+    source: EventSource,
+    decoded: DecodedYmEvent | DecodedAMMEvent | DecodedRouterEvent,
     marketId: string,
 ) {
     await prisma.$transaction(async (tx) => {
@@ -160,7 +170,7 @@ export async function applyMarketEvent(
 async function decodeOrRecord<T>(
     raw: rpc.Api.EventResponse,
     decode: (raw: rpc.Api.EventResponse) => T,
-    into: { source: "ym" | "amm"; market: string } | null,
+    into: { source: EventSource; market: string } | null,
 ): Promise<T | null> {
     try {
         return decode(raw);
@@ -180,7 +190,7 @@ async function decodeOrRecord<T>(
 export async function recordUndecoded(
     raw: rpc.Api.EventResponse,
     err: unknown,
-    into: { source: "ym" | "amm"; market: string } | null,
+    into: { source: EventSource; market: string } | null,
 ) {
     const common = {
         id: raw.id,
@@ -333,8 +343,11 @@ export async function syncEvents() {
         markets.map((market) => [market.pool, market.id]),
     );
 
+    const marketIds = new Set(markets.map((market) => market.id));
+
     const contractIds = [
         FACTORY_ADDRESS,
+        ...(ROUTER_ADDRESS ? [ROUTER_ADDRESS] : []),
         ...ymToMarket.keys(),
         ...poolToMarket.keys(),
     ];
@@ -386,6 +399,20 @@ export async function syncEvents() {
                 const market = poolToMarket.get(contractId)!;
                 const decoded = await decodeOrRecord(raw, decodeAMMEvent, { source: "amm", market });
                 if (decoded) await applyMarketEvent(raw, "amm", decoded, market);
+            } else if (ROUTER_ADDRESS && contractId === ROUTER_ADDRESS) {
+                // A router event names its market itself. One for a market this
+                // indexer doesn't know (created after this sync's market list was
+                // read, or on another factory) is skipped; the next sync's list
+                // will know it, and the cursor only advances past applied events
+                // once the whole batch is done.
+                const decoded = await decodeOrRecord(raw, decodeRouterEvent, null);
+                if (!decoded) return;
+                const market = `${decoded.vault}:${decoded.maturity}`;
+                if (!marketIds.has(market)) {
+                    console.warn(`[router event] ${decoded.kind} for unknown market ${market}; skipped`);
+                    return;
+                }
+                await applyMarketEvent(raw, "router", decoded, market);
             }
         } catch (err) {
             console.error(

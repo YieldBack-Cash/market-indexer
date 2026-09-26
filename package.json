@@ -10,7 +10,11 @@
         "api": "tsx src/api.ts",
         "curate": "tsx src/curate.ts",
         "backfill-params": "tsx src/backfill-market-params.ts",
-        "test": "vitest run"
+        "test": "vitest run",
+        "gen:events": "tsx src/spec/genEventLayouts.ts",
+        "check:events": "tsx src/spec/genEventLayouts.ts --check",
+        "sync:protocol": "tsx src/spec/syncProtocol.ts",
+        "check:protocol": "tsx src/spec/syncProtocol.ts --check"
     },
     "keywords": [],
     "author": "",

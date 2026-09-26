@@ -1,3 +1,4 @@
+import { SCALE, SECONDS_PER_YEAR, ptPriceFromRate } from "./protocol/protocol";
 // Realized LP fee APY for one pool, from indexed trade events.
 //
 // Pools built from AMM wasm with the trade-fee event fields emit `fee` and
@@ -20,8 +21,6 @@ export const APY_WINDOW_MS = 7 * DAY_MS;
 // A pool a few minutes into its first trades would annualize one fee into an
 // absurd APY, so the window never counts as shorter than a day.
 const MIN_WINDOW_MS = DAY_MS;
-const YEAR_SECS = 365 * 24 * 60 * 60;
-const SCALE = 1e7;
 
 export type FeeTrade = {
     at: Date;
@@ -66,8 +65,7 @@ export function computeLpFeeApy(input: LpFeeApyInput): bigint | null {
     }
 
     // PT redeems 1 asset at maturity, so it's worth e^(-rate * years) assets now.
-    const years = secsToExpiry / YEAR_SECS;
-    const ptPriceAssets = Math.exp((-Number(impliedRate) / SCALE) * years);
+    const ptPriceAssets = ptPriceFromRate(Number(impliedRate), secsToExpiry / SECONDS_PER_YEAR);
     const tvlShares = Number(reserveB) + (Number(reserveA) * ptPriceAssets) / vaultRate;
     if (!(tvlShares > 0)) return null;
 

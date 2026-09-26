@@ -1,11 +1,18 @@
 import "dotenv/config";
-import { PrismaClient, Market } from "@prisma/client";
+import { PrismaClient, Market, Protocol } from "@prisma/client";
 import {
     setListed,
     isNotFound,
+    isAlreadyExists,
+    isUnknownProtocol,
+    isProtocolSlug,
     setVaultMetadata,
     parseVaultMetadata,
     VAULT_FIELDS,
+    createProtocol,
+    setProtocolMetadata,
+    parseProtocolMetadata,
+    PROTOCOL_FIELDS,
 } from "./curation";
 
 const prisma = new PrismaClient();
@@ -16,11 +23,19 @@ const USAGE = `Usage:
   npm run curate -- approve <marketId> [note]
   npm run curate -- hide    <marketId> [note]
 
+  npm run curate -- protocols                all protocols + missing metadata
+  npm run curate -- protocol <id>            one protocol's full metadata
+  npm run curate -- protocol-add <id> <name>
+  npm run curate -- protocol-set <id> <field> <value>
+
   npm run curate -- vaults                   all vaults + missing metadata
   npm run curate -- vault <address>          one vault's full metadata
   npm run curate -- vault-set <address> <field> <value>
 
-  vault fields: ${VAULT_FIELDS.join(", ")}
+  protocol fields: ${PROTOCOL_FIELDS.join(", ")}
+  vault fields:    ${VAULT_FIELDS.join(", ")}
+
+  <id> is a slug you choose, versioned with the protocol: blendv2, xoxno.
 `;
 
 function printMarkets(markets: Market[]) {
@@ -41,9 +56,22 @@ function printMarkets(markets: Market[]) {
     console.log(`\n${markets.length} market(s)`);
 }
 
+function printProtocolFields(p: Protocol, indent: string) {
+    for (const f of PROTOCOL_FIELDS) {
+        console.log(`${indent}${f.padEnd(13)} ${p[f] ?? "—"}`);
+    }
+}
+
+function printCuration(row: { curatedAt: Date | null; curationNote: string | null }) {
+    console.log(
+        `  curatedAt=${row.curatedAt?.toISOString() ?? "—"}` +
+            (row.curationNote ? `\n  note: ${row.curationNote}` : ""),
+    );
+}
+
 async function main() {
-    const [command, id, ...noteParts] = process.argv.slice(2);
-    const note = noteParts.length > 0 ? noteParts.join(" ") : undefined;
+    const [command, id, ...rest] = process.argv.slice(2);
+    const note = rest.length > 0 ? rest.join(" ") : undefined;
 
     switch (command) {
         case "pending":
@@ -79,10 +107,122 @@ async function main() {
             }
         }
 
+        case "protocols": {
+            const protocols = await prisma.protocol.findMany({
+                orderBy: { id: "asc" },
+                include: { _count: { select: { vaults: true } } },
+            });
+
+            if (protocols.length === 0) {
+                console.log("(none)");
+                return 0;
+            }
+
+            for (const p of protocols) {
+                const missing = PROTOCOL_FIELDS.filter((f) => !p[f]);
+                const state = missing.length === 0 ? "complete  " : "incomplete";
+                console.log(
+                    `  [${state}] ${p.id}\n      ${p.name} · vaults=${p._count.vaults}` +
+                        (missing.length > 0
+                            ? `\n      missing: ${missing.join(", ")}`
+                            : ""),
+                );
+            }
+            console.log(`\n${protocols.length} protocol(s)`);
+            return 0;
+        }
+
+        case "protocol": {
+            if (!id) {
+                console.error(`protocol needs an id\n\n${USAGE}`);
+                return 1;
+            }
+
+            const protocol = await prisma.protocol.findUnique({
+                where: { id },
+                include: { vaults: { select: { address: true, displayName: true } } },
+            });
+            if (!protocol) {
+                console.error(`no protocol with id ${id}`);
+                return 1;
+            }
+
+            console.log(`  ${protocol.id}`);
+            printProtocolFields(protocol, "      ");
+            console.log(`  vaults:`);
+            if (protocol.vaults.length === 0) console.log(`      (none)`);
+            for (const v of protocol.vaults) {
+                console.log(`      ${v.address}  ${v.displayName ?? "(no display name)"}`);
+            }
+            printCuration(protocol);
+            return 0;
+        }
+
+        case "protocol-add": {
+            if (!id || rest.length === 0) {
+                console.error(`protocol-add needs <id> <name>\n\n${USAGE}`);
+                return 1;
+            }
+            if (!isProtocolSlug(id)) {
+                console.error(
+                    `${id} is not a slug: lowercase letters, digits and dashes, e.g. blendv2`,
+                );
+                return 1;
+            }
+
+            const parsed = parseProtocolMetadata({ name: rest.join(" ") });
+            if (!parsed.ok) {
+                console.error(parsed.error);
+                return 1;
+            }
+
+            try {
+                await createProtocol(prisma, id, { name: parsed.value.name });
+                console.log(`created protocol ${id}`);
+                return 0;
+            } catch (err) {
+                if (isAlreadyExists(err)) {
+                    console.error(`protocol ${id} already exists`);
+                    return 1;
+                }
+                throw err;
+            }
+        }
+
+        case "protocol-set": {
+            const [field, ...valueParts] = rest;
+            if (!id || !field || valueParts.length === 0) {
+                console.error(
+                    `protocol-set needs <id> <field> <value>\n\n${USAGE}`,
+                );
+                return 1;
+            }
+
+            const parsed = parseProtocolMetadata({
+                [field]: valueParts.join(" "),
+            });
+            if (!parsed.ok) {
+                console.error(parsed.error);
+                return 1;
+            }
+
+            try {
+                await setProtocolMetadata(prisma, id, parsed.value);
+                console.log(`${id}: set ${field}`);
+                return 0;
+            } catch (err) {
+                if (isNotFound(err)) {
+                    console.error(`no protocol with id ${id}`);
+                    return 1;
+                }
+                throw err;
+            }
+        }
+
         case "vaults": {
             const vaults = await prisma.vault.findMany({
                 orderBy: { createdAt: "desc" },
-                include: { _count: { select: { markets: true } } },
+                include: { protocol: true, _count: { select: { markets: true } } },
             });
 
             if (vaults.length === 0) {
@@ -94,7 +234,7 @@ async function main() {
                 const missing = VAULT_FIELDS.filter((f) => !v[f]);
                 const state = missing.length === 0 ? "complete  " : "incomplete";
                 console.log(
-                    `  [${state}] ${v.address}\n      ${v.displayName ?? "(no display name)"} · ${v.protocolName ?? "(no protocol)"} · underlying=${v.underlyingSymbol ?? "?"} · markets=${v._count.markets}` +
+                    `  [${state}] ${v.address}\n      ${v.displayName ?? "(no display name)"} · ${v.protocol?.name ?? "(no protocol)"} · underlying=${v.underlyingSymbol ?? "?"} · markets=${v._count.markets}` +
                         (missing.length > 0
                             ? `\n      missing: ${missing.join(", ")}`
                             : ""),
@@ -112,6 +252,7 @@ async function main() {
 
             const vault = await prisma.vault.findUnique({
                 where: { address: id },
+                include: { protocol: true },
             });
             if (!vault) {
                 console.error(`no vault with address ${id}`);
@@ -120,22 +261,23 @@ async function main() {
 
             console.log(`  ${vault.address}`);
             console.log(`  indexed from chain:`);
-            for (const f of ["underlyingSymbol", "underlyingAsset", "pool"]) {
+            for (const f of ["underlyingSymbol", "underlyingAsset", "pool"] as const) {
                 console.log(`      ${f.padEnd(17)} ${vault[f] ?? "—"}`);
             }
             console.log(`  curated:`);
             for (const f of VAULT_FIELDS) {
                 console.log(`      ${f.padEnd(17)} ${vault[f] ?? "—"}`);
             }
-            console.log(
-                `  curatedAt=${vault.curatedAt?.toISOString() ?? "—"}` +
-                    (vault.curationNote ? `\n  note: ${vault.curationNote}` : ""),
-            );
+            if (vault.protocol) {
+                console.log(`  protocol ${vault.protocol.id}:`);
+                printProtocolFields(vault.protocol, "      ");
+            }
+            printCuration(vault);
             return 0;
         }
 
         case "vault-set": {
-            const [field, ...valueParts] = noteParts;
+            const [field, ...valueParts] = rest;
             if (!id || !field || valueParts.length === 0) {
                 console.error(
                     `vault-set needs <address> <field> <value>\n\n${USAGE}`,
@@ -160,6 +302,12 @@ async function main() {
             } catch (err) {
                 if (isNotFound(err)) {
                     console.error(`no vault with address ${id}`);
+                    return 1;
+                }
+                if (isUnknownProtocol(err)) {
+                    console.error(
+                        `no protocol with id ${parsed.value.protocolId} — protocol-add it first`,
+                    );
                     return 1;
                 }
                 throw err;

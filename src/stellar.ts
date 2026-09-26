@@ -1,3 +1,4 @@
+import { SCALAR_7, SCALE } from "./protocol/protocol";
 import "dotenv/config";
 import {
     rpc,
@@ -14,47 +15,36 @@ import {
 const server = new rpc.Server(process.env.SOROBAN_RPC_URL!);
 const PAGE_LIMIT = 1000;
 
-export async function getTokenSymbol(contractId: string): Promise<string> {
-    try {
-        const account = new Account(Keypair.random().publicKey(), "0");
-        const tx = new TransactionBuilder(account, {
-            fee: "100",
-            networkPassphrase: Networks.TESTNET,
-        })
-            .addOperation(new Contract(contractId).call("symbol"))
-            .setTimeout(30)
-            .build();
-        const result = await server.simulateTransaction(tx);
-        if (rpc.Api.isSimulationError(result)) return contractId.slice(0, 8);
-
-        return scValToNative(result.result!.retval) as string;
-    } catch {
-        return contractId.slice(0, 8);
-    }
+/**
+ * The one way the indexer reads a contract: simulate a call and decode the
+ * result. Throws with the simulation's own error text when it fails.
+ */
+async function read<T>(contractId: string, method: string, args: xdr.ScVal[] = []): Promise<T> {
+    const account = new Account(Keypair.random().publicKey(), "0");
+    const tx = new TransactionBuilder(account, {
+        fee: "100",
+        networkPassphrase: Networks.TESTNET,
+    })
+        .addOperation(new Contract(contractId).call(method, ...args))
+        .setTimeout(30)
+        .build();
+    const result = await server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(result)) throw new Error(result.error);
+    if (!rpc.Api.isSimulationSuccess(result) || !result.result) throw new Error(`${method} returned no value`);
+    return scValToNative(result.result.retval) as T;
 }
 
-// Simulates a read-only call, returning the decoded value, or undefined when the
-// contract doesn't implement the method (or the simulation fails outright).
-async function simulateCall<T>(
-    contractId: string,
-    method: string,
-): Promise<T | undefined> {
+/** `read`, or undefined when the contract lacks the method or the read fails. */
+async function tryRead<T>(contractId: string, method: string, args: xdr.ScVal[] = []): Promise<T | undefined> {
     try {
-        const account = new Account(Keypair.random().publicKey(), "0");
-        const tx = new TransactionBuilder(account, {
-            fee: "100",
-            networkPassphrase: Networks.TESTNET,
-        })
-            .addOperation(new Contract(contractId).call(method))
-            .setTimeout(30)
-            .build();
-        const result = await server.simulateTransaction(tx);
-        if (rpc.Api.isSimulationError(result)) return undefined;
-
-        return scValToNative(result.result!.retval) as T;
+        return await read<T>(contractId, method, args);
     } catch {
         return undefined;
     }
+}
+
+export async function getTokenSymbol(contractId: string): Promise<string> {
+    return (await tryRead<string>(contractId, "symbol")) ?? contractId.slice(0, 8);
 }
 
 export type VaultUnderlying = { assetAddress: string; symbol: string };
@@ -65,87 +55,35 @@ export async function getVaultUnderlying(
     vaultContractId: string,
 ): Promise<VaultUnderlying | undefined> {
     const assetAddress =
-        (await simulateCall<string>(vaultContractId, "query_asset")) ??
-        (await simulateCall<string>(vaultContractId, "asset"));
+        (await tryRead<string>(vaultContractId, "query_asset")) ??
+        (await tryRead<string>(vaultContractId, "asset"));
     if (!assetAddress) return undefined;
 
     const symbol = await getTokenSymbol(assetAddress);
     return { assetAddress, symbol: symbol === "native" ? "XLM" : symbol };
 }
 
-// The pool the vault lends into, from get_config() -> (pool, asset). Vaults that
-// don't implement it simply have no pool recorded.
-export async function getVaultPool(
-    vaultContractId: string,
-): Promise<string | undefined> {
-    const config = await simulateCall<[string, string]>(
-        vaultContractId,
-        "get_config",
-    );
-    return config?.[0];
+// The protocol contract the vault supplies to (Blend pool, XOXNO controller),
+// from the YBC adapters' informational `get_protocol() -> Address`. It is not
+// part of SEP-56, so a third-party vault simply has no pool recorded.
+export async function getVaultPool(vaultContractId: string): Promise<string | undefined> {
+    return tryRead<string>(vaultContractId, "get_protocol");
 }
 
-// The treasury's share of each trade's fee (1e7-scaled), fixed at pool creation.
-export async function getPoolReserveFeeRate(
-    poolContractId: string,
-): Promise<bigint | undefined> {
-    return simulateCall<bigint>(poolContractId, "get_reserve_fee_rate");
+export async function getPoolReserveFeeRate(poolContractId: string): Promise<bigint | undefined> {
+    return tryRead<bigint>(poolContractId, "get_reserve_fee_rate");
 }
 
-export async function getVaultExchangeRate(
-    vaultContractId: string,
-): Promise<number | undefined> {
-    try {
-        const account = new Account(Keypair.random().publicKey(), "0");
-        const tx = new TransactionBuilder(account, {
-            fee: "100",
-            networkPassphrase: Networks.TESTNET,
-        })
-            .addOperation(
-                new Contract(vaultContractId).call(
-                    "convert_to_assets",
-                    nativeToScVal(10_000_000, {
-                        type: "i128",
-                    }),
-                ),
-            )
-            .setTimeout(30)
-            .build();
-
-        const result = await server.simulateTransaction(tx);
-        if (rpc.Api.isSimulationError(result)) return undefined;
-
-        const assets = scValToNative(result.result!.retval) as bigint;
-        return Number(assets) / 1e7;
-    } catch {
-        return undefined;
-    }
+/** Assets per vault share, as a number, or undefined when the vault won't answer. */
+export async function getVaultExchangeRate(vaultContractId: string): Promise<number | undefined> {
+    const assets = await tryRead<bigint>(vaultContractId, "convert_to_assets", [
+        nativeToScVal(SCALAR_7, { type: "i128" }),
+    ]);
+    return assets === undefined ? undefined : Number(assets) / SCALE;
 }
 
-export async function getTokenBalance(
-    contractId: string,
-    accountId: string,
-): Promise<bigint | undefined> {
-    try {
-        const account = new Account(Keypair.random().publicKey(), "0");
-        const tx = new TransactionBuilder(account, {
-            fee: "100",
-            networkPassphrase: Networks.TESTNET,
-        })
-            .addOperation(
-                new Contract(contractId).call(
-                    "balance",
-                    nativeToScVal(accountId, { type: "address" }),
-                ),
-        ).setTimeout(30).build();
-        const result = await server.simulateTransaction(tx);
-
-        if (rpc.Api.isSimulationError(result)) return undefined;
-
-        return scValToNative(result.result!.retval) as bigint;
-    } catch {
-        return undefined;
-    }
+export async function getTokenBalance(contractId: string, accountId: string): Promise<bigint | undefined> {
+    return tryRead<bigint>(contractId, "balance", [nativeToScVal(accountId, { type: "address" })]);
 }
 
 export async function getCurrentLedger(): Promise<number> {

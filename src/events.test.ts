@@ -53,11 +53,13 @@ describe("decodeFactoryEvent", () => {
             vault,
         };
 
+        const creator = addr();
         const event = fixtureEvent(
             [
                 nativeToScVal("market_created", {
                     type: "symbol",
                 }),
+                nativeToScVal(creator, { type: "address" }),
                 nativeToScVal(vault, { type: "address" }),
             ],
             marketScVal(market),
@@ -65,32 +67,9 @@ describe("decodeFactoryEvent", () => {
 
         expect(decodeFactoryEvent(event)).toEqual({
             kind: "market_created",
+            creator,
             vault,
             market,
-        });
-    });
-
-    it("decodes admin_changed", () => {
-        const oldAdmin = addr();
-        const newAdmin = addr();
-
-        const event = fixtureEvent(
-            [nativeToScVal("admin_changed", { type: "symbol" })],
-            nativeToScVal(
-                { old_admin: oldAdmin, new_admin: newAdmin },
-                {
-                    type: {
-                        old_admin: ["symbol", "address"],
-                        new_admin: ["symbol", "address"],
-                    },
-                },
-            ),
-        );
-
-        expect(decodeFactoryEvent(event)).toEqual({
-            kind: "admin_changed",
-            oldAdmin,
-            newAdmin,
         });
     });
 

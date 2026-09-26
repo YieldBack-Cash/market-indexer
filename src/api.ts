@@ -1,10 +1,20 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { PrismaClient, Market, Vault } from "@prisma/client";
+import { PrismaClient, FactoryEvent, Market, MarketEvent, Vault, Protocol } from "@prisma/client";
+import type {
+    AccountBalanceJson,
+    FactoryEventJson,
+    IndexerStatusJson,
+    MarketEventJson,
+    MarketEventSource,
+    MarketJson,
+    VaultJson,
+    VaultRateSnapshotJson,
+} from "./protocol/protocol";
 import rateLimit from "express-rate-limit";
 import { getTokenBalance } from "./stellar";
-import { marketWhere, MARKET_ORDER } from "./curation";
+import { marketWhere, MARKET_ORDER, flattenProtocol } from "./curation";
 import { adminRouter } from "./admin";
 
 const app = express();
@@ -34,35 +44,91 @@ function boolParam(value: unknown): boolean {
     return value === "true" || value === "1";
 }
 
-function toMarketJson(market: Market, now: bigint) {
-    // res.json cannot serialize BigInt, and Market carries several (maturity,
-    // the apy columns), so stringify them all rather than naming each one.
-    const serialized = Object.fromEntries(
-        Object.entries(market).map(([key, value]) => [
-            key,
-            typeof value === "bigint" ? value.toString() : value,
-        ]),
-    );
+const iso = (d: Date | null) => (d ? d.toISOString() : null);
+const big = (b: bigint | null) => (b === null ? null : b.toString());
 
-    // Curation notes are internal review copy — never expose them publicly.
-    delete serialized.curationNote;
-
+// Every response is built field by field against the wire types in
+// src/protocol/protocol.ts, never by spreading a Prisma row: a column the schema gains is
+// not sent until it is declared, a column the frontend expects is a type error
+// here the moment the schema loses it, and internal review copy (curation
+// notes) cannot leak by accident.
+function toMarketJson(market: Market, now: bigint): MarketJson {
     return {
-        ...serialized,
+        id: market.id,
+        vault: market.vault,
+        name: market.name,
+        ym: market.ym,
+        pt: market.pt,
+        yt: market.yt,
+        pool: market.pool,
+        maturity: market.maturity.toString(),
+        creator: market.creator,
+        verified: market.verified,
+        listed: market.listed,
+        curatedAt: iso(market.curatedAt),
+        currentApy: big(market.currentApy),
+        apyMin: big(market.apyMin),
+        apyMax: big(market.apyMax),
+        feeApy: big(market.feeApy),
+        reserveFeeRate: big(market.reserveFeeRate),
+        lpFeeApy: big(market.lpFeeApy),
+        lpFeeApyUpdatedAt: iso(market.lpFeeApyUpdatedAt),
+        createdAt: market.createdAt.toISOString(),
+        updatedAt: market.updatedAt.toISOString(),
         isActive: market.maturity > now,
     };
 }
 
-type VaultWithMarkets = Vault & { markets?: Market[] };
+type VaultWithRelations = Vault & {
+    protocol: Protocol | null;
+    markets?: Market[];
+};
 
-function toVaultJson(vault: VaultWithMarkets, now: bigint) {
-    const { curationNote, markets, ...rest } = vault;
-
+function toVaultJson(vault: VaultWithRelations, now: bigint): VaultJson {
     return {
-        ...rest,
-        ...(markets === undefined
+        address: vault.address,
+        createdAt: vault.createdAt.toISOString(),
+        updatedAt: vault.updatedAt.toISOString(),
+        underlyingSymbol: vault.underlyingSymbol,
+        underlyingAsset: vault.underlyingAsset,
+        pool: vault.pool,
+        displayName: vault.displayName,
+        description: vault.description,
+        riskText: vault.riskText,
+        protocolId: vault.protocolId,
+        curatedAt: iso(vault.curatedAt),
+        ...flattenProtocol(vault.protocol),
+        ...(vault.markets === undefined
             ? {}
-            : { markets: markets.map((m) => toMarketJson(m, now)) }),
+            : { markets: vault.markets.map((m) => toMarketJson(m, now)) }),
+    };
+}
+
+function toMarketEventJson(e: MarketEvent): MarketEventJson {
+    return {
+        id: e.id,
+        ledger: e.ledger,
+        ledgerClosedAt: e.ledgerClosedAt.toISOString(),
+        source: e.source as MarketEventSource,
+        type: e.type,
+        txHash: e.txHash,
+        contractId: e.contractId,
+        market: e.market,
+        payload: e.payload,
+        createdAt: e.createdAt.toISOString(),
+    };
+}
+
+function toFactoryEventJson(e: FactoryEvent): FactoryEventJson {
+    return {
+        id: e.id,
+        ledger: e.ledger,
+        ledgerClosedAt: e.ledgerClosedAt.toISOString(),
+        type: e.type,
+        txHash: e.txHash,
+        vault: e.vault,
+        payload: e.payload,
+        createdAt: e.createdAt.toISOString(),
     };
 }
 
@@ -83,7 +149,7 @@ app.get("/markets/:id/events", async (req, res) => {
         where: { market: req.params.id },
         orderBy: { ledger: "desc" },
     });
-    res.json(events);
+    res.json(events.map(toMarketEventJson));
 });
 
 app.get("/vaults/:address/rate-history", async (req, res) => {
@@ -92,7 +158,8 @@ app.get("/vaults/:address/rate-history", async (req, res) => {
         orderBy: { timestamp: "asc" },
         select: { rate: true, timestamp: true },
     });
-    res.json(snapshots);
+    const body: VaultRateSnapshotJson[] = snapshots.map((s) => ({ rate: s.rate, timestamp: s.timestamp.toISOString() }));
+    res.json(body);
 });
 
 app.get("/vaults/:address/markets", async (req, res) => {
@@ -122,7 +189,7 @@ app.get("/accounts/:address/balances", async (req, res) => {
         },
     });
 
-    const balances = await Promise.all(markets.map(async (market) => {
+    const balances: AccountBalanceJson[] = await Promise.all(markets.map(async (market) => {
         const [ptBalance, ytBalance] = await Promise.all([
             getTokenBalance(market.pt, req.params.address),
             getTokenBalance(market.yt, req.params.address),
@@ -158,13 +225,14 @@ app.get("/accounts/:address/events", async (req, res) => {
         orderBy: { ledger: "desc" },
         take: limit,
     });
-    res.json(events);
+    res.json(events.map(toMarketEventJson));
 });
 
 app.get("/vaults", async (req, res) => {
     const now = nowSecs();
     const vaults = await prisma.vault.findMany({
         include: {
+            protocol: true,
             markets: { where: marketWhere(now), orderBy: MARKET_ORDER },
         },
     });
@@ -180,6 +248,7 @@ app.get("/vaults/:address", async (req, res) => {
     const vault = await prisma.vault.findUnique({
         where: { address: req.params.address },
         include: {
+            protocol: true,
             markets: { where: marketWhere(now), orderBy: MARKET_ORDER },
         },
     });
@@ -192,10 +261,11 @@ app.get("/vaults/:address", async (req, res) => {
 app.get("/status", async (req, res) => {
     const state = await prisma.indexerState.findUnique({ where: { id: 1 } });
 
-    res.json({
-        lastPolled: state?.lastPolled ?? null,
+    const body: IndexerStatusJson = {
+        lastPolled: iso(state?.lastPolled ?? null),
         lastLedger: state?.lastLedger ?? null,
-    });
+    };
+    res.json(body);
 });
 
 app.get("/events", async (req, res) => {
@@ -204,7 +274,7 @@ app.get("/events", async (req, res) => {
         orderBy: { ledger: "desc" },
         take: limit,
     });
-    res.json(events);
+    res.json(events.map(toFactoryEventJson));
 });
 
 app.get("/vaults/:address/events", async (req, res) => {
@@ -212,7 +282,7 @@ app.get("/vaults/:address/events", async (req, res) => {
         where: { vault: req.params.address },
         orderBy: { ledger: "desc" },
     });
-    res.json(events);
+    res.json(events.map(toFactoryEventJson));
 });
 
 const PORT = Number(process.env.PORT ?? 3001);

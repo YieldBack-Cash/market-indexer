@@ -36,11 +36,22 @@ const server: EventClient & Pick<rpc.Server, "simulateTransaction" | "getLatestL
  * The one way the indexer reads a contract: simulate a call and decode the
  * result. Throws with the simulation's own error text when it fails.
  */
+// The network is configuration, not code (O-10): the passphrase must be one
+// of the two Stellar networks and defaults to testnet, and the RPC URL comes
+// from the same file. A mainnet deployment changes both and nothing else.
+export function networkPassphrase(): string {
+    const configured = process.env.NETWORK_PASSPHRASE ?? Networks.TESTNET;
+    if (configured !== Networks.TESTNET && configured !== Networks.PUBLIC) {
+        throw new Error(`NETWORK_PASSPHRASE is not a known network: ${JSON.stringify(configured)}`);
+    }
+    return configured;
+}
+
 async function read<T>(contractId: string, method: string, args: xdr.ScVal[] = []): Promise<T> {
     const account = new Account(Keypair.random().publicKey(), "0");
     const tx = new TransactionBuilder(account, {
         fee: "100",
-        networkPassphrase: Networks.TESTNET,
+        networkPassphrase: networkPassphrase(),
     })
         .addOperation(new Contract(contractId).call(method, ...args))
         .setTimeout(30)

@@ -187,5 +187,12 @@ export interface AccountBalanceJson {
 /** From `/status`. */
 export interface IndexerStatusJson {
     lastPolled: string | null;
+    /** The last ledger the poller has fully scanned. */
     lastLedger: number | null;
+    /** The chain tip as the RPC reports it; null when the RPC could not be reached. */
+    latestLedger: number | null;
+    /** latestLedger - lastLedger. The poller's health is this number, not whether it is polling. */
+    lagLedgers: number | null;
+    /** False when lastLedger is older than the RPC keeps events for: history has been lost. */
+    inRetention: boolean | null;
 }

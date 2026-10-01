@@ -13,9 +13,10 @@ import type {
     VaultRateSnapshotJson,
 } from "./protocol/protocol";
 import rateLimit from "express-rate-limit";
-import { getTokenBalance } from "./stellar";
+import { getChainHealth, getTokenBalance } from "./stellar";
 import { marketWhere, MARKET_ORDER, flattenProtocol } from "./curation";
 import { adminRouter } from "./admin";
+import { LIMIT_ERROR, limitParam, MAX_LIMIT } from "./params";
 
 const app = express();
 // Behind nginx, req.ip is the proxy's address unless we trust one hop — without
@@ -38,10 +39,35 @@ function nowSecs(): bigint {
     return BigInt(Math.floor(Date.now() / 1000));
 }
 
-// The project has no validation library; this matches the hand-rolled parsing
-// already used for the `limit` query param below.
+// The project has no validation library; the two query parameters it takes
+// are parsed by hand, strictly.
 function boolParam(value: unknown): boolean {
     return value === "true" || value === "1";
+}
+
+
+// Only curated markets leave this API (O-23). `listed` already gated the market
+// lists and the balances; these helpers gate everything else, so a market the
+// factory has seen but nobody has reviewed is not reachable by another client
+// either. A vault is visible while at least one of its markets is listed.
+const LISTED_VAULT = { markets: { some: { listed: true } } } as const;
+
+async function isListedMarket(id: string): Promise<boolean> {
+    return (await prisma.market.count({ where: { id, listed: true } })) > 0;
+}
+
+async function isListedVault(address: string): Promise<boolean> {
+    return (await prisma.vault.count({ where: { address, ...LISTED_VAULT } })) > 0;
+}
+
+async function listedMarketIds(): Promise<string[]> {
+    const rows = await prisma.market.findMany({ where: { listed: true }, select: { id: true } });
+    return rows.map((r) => r.id);
+}
+
+async function listedVaultAddresses(): Promise<string[]> {
+    const rows = await prisma.vault.findMany({ where: LISTED_VAULT, select: { address: true } });
+    return rows.map((r) => r.address);
 }
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
@@ -145,14 +171,21 @@ app.get("/markets", async (req, res) => {
 });
 
 app.get("/markets/:id/events", async (req, res) => {
+    const limit = limitParam(req.query.limit, MAX_LIMIT);
+    if (limit === null) return res.status(400).json(LIMIT_ERROR);
+    if (!(await isListedMarket(req.params.id))) return res.status(404).json({ error: "market not found" });
     const events = await prisma.marketEvent.findMany({
         where: { market: req.params.id },
         orderBy: { ledger: "desc" },
+        take: limit,
     });
     res.json(events.map(toMarketEventJson));
 });
 
+// Unbounded on purpose: the indexer writes one snapshot an hour, so nobody
+// outside this process can grow the list.
 app.get("/vaults/:address/rate-history", async (req, res) => {
+    if (!(await isListedVault(req.params.address))) return res.status(404).json({ error: "vault not found" });
     const snapshots = await prisma.vaultRateSnapshot.findMany({
         where: { vault: req.params.address },
         orderBy: { timestamp: "asc" },
@@ -177,32 +210,47 @@ app.get("/vaults/:address/markets", async (req, res) => {
     res.json(markets.map((m) => toMarketJson(m, now)));
 });
 
-app.get("/accounts/:address/balances", async (req, res) => {
+// Balances are two simulated contract calls per listed market, so a page that
+// refetches on focus used to cost 2N RPC round-trips each time. A balance can
+// only change when a ledger closes, so the answer is kept per (address, ledger)
+// and re-read only once the chain has moved. Bounded so an address scan cannot
+// grow it without limit.
+const BALANCE_CACHE_MAX = 500;
+const balanceCache = new Map<string, AccountBalanceJson[]>();
+
+async function balancesFor(address: string, ledger: number): Promise<AccountBalanceJson[]> {
+    const key = `${address}:${ledger}`;
+    const hit = balanceCache.get(key);
+    if (hit) return hit;
+
     // Deliberately unfiltered by maturity: PT/YT in a matured market is
     // exactly what the holder still needs to see in order to redeem it.
     const markets = await prisma.market.findMany({
         where: { listed: true },
-        select: {
-            id: true,
-            pt: true,
-            yt: true
-        },
+        select: { id: true, pt: true, yt: true },
     });
-
     const balances: AccountBalanceJson[] = await Promise.all(markets.map(async (market) => {
         const [ptBalance, ytBalance] = await Promise.all([
-            getTokenBalance(market.pt, req.params.address),
-            getTokenBalance(market.yt, req.params.address),
+            getTokenBalance(market.pt, address),
+            getTokenBalance(market.yt, address),
         ]);
-
         return {
             marketId: market.id,
             ptBalance: (ptBalance ?? 0n).toString(),
             ytBalance: (ytBalance ?? 0n).toString(),
         };
-    }),);
+    }));
 
-    res.json(balances);
+    if (balanceCache.size >= BALANCE_CACHE_MAX) {
+        balanceCache.delete(balanceCache.keys().next().value!);
+    }
+    balanceCache.set(key, balances);
+    return balances;
+}
+
+app.get("/accounts/:address/balances", async (req, res) => {
+    const { latestLedger } = await getChainHealth();
+    res.json(await balancesFor(req.params.address, latestLedger));
 });
 
 // One wallet's own activity across every market, newest first: the market events
@@ -214,10 +262,12 @@ app.get("/accounts/:address/balances", async (req, res) => {
 // Fine at testnet volume; if it gets slow, add expression indexes on
 // payload->>'to' / 'from' / 'user' (raw SQL migration, Prisma can't express them).
 app.get("/accounts/:address/events", async (req, res) => {
-    const limit = Math.min(Number(req.query.limit) || 200, 500);
+    const limit = limitParam(req.query.limit, 200);
+    if (limit === null) return res.status(400).json(LIMIT_ERROR);
     const address = req.params.address;
     const events = await prisma.marketEvent.findMany({
         where: {
+            market: { in: await listedMarketIds() },
             OR: ["to", "from", "user"].map((key) => ({
                 payload: { path: [key], equals: address },
             })),
@@ -231,6 +281,7 @@ app.get("/accounts/:address/events", async (req, res) => {
 app.get("/vaults", async (req, res) => {
     const now = nowSecs();
     const vaults = await prisma.vault.findMany({
+        where: LISTED_VAULT,
         include: {
             protocol: true,
             markets: { where: marketWhere(now), orderBy: MARKET_ORDER },
@@ -241,12 +292,12 @@ app.get("/vaults", async (req, res) => {
 });
 
 // Single vault with its curated metadata. The market details page needs this
-// given only a `market.vault` address, and a 404 distinguishes an unknown
-// vault from one that simply has no listed markets.
+// given only a `market.vault` address. A vault with no listed market is a 404
+// like an unknown one: the API does not confirm what the factory has seen.
 app.get("/vaults/:address", async (req, res) => {
     const now = nowSecs();
-    const vault = await prisma.vault.findUnique({
-        where: { address: req.params.address },
+    const vault = await prisma.vault.findFirst({
+        where: { address: req.params.address, ...LISTED_VAULT },
         include: {
             protocol: true,
             markets: { where: marketWhere(now), orderBy: MARKET_ORDER },
@@ -258,19 +309,33 @@ app.get("/vaults/:address", async (req, res) => {
     res.json(toVaultJson(vault, now));
 });
 
+// The poller's health is its distance from the tip, not whether it is polling:
+// the 2026-09-09 outage polled on schedule for weeks while seeing nothing. So
+// the status carries the tip and the lag, and a lag past the RPC's retention
+// window is reported as such. The RPC fields are null if the RPC is unreachable,
+// which is itself worth seeing here.
 app.get("/status", async (req, res) => {
     const state = await prisma.indexerState.findUnique({ where: { id: 1 } });
+    const health = await getChainHealth().catch(() => null);
+    const lastLedger = state?.lastLedger ?? null;
 
     const body: IndexerStatusJson = {
         lastPolled: iso(state?.lastPolled ?? null),
-        lastLedger: state?.lastLedger ?? null,
+        lastLedger,
+        latestLedger: health?.latestLedger ?? null,
+        lagLedgers: health && lastLedger !== null ? Math.max(0, health.latestLedger - lastLedger) : null,
+        inRetention: health && lastLedger !== null ? lastLedger >= health.oldestLedger : null,
     };
     res.json(body);
 });
 
+// Factory events for listed vaults, plus the factory's own (ownership, wasm
+// hashes, fees), which name no vault.
 app.get("/events", async (req, res) => {
-    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const limit = limitParam(req.query.limit, 100);
+    if (limit === null) return res.status(400).json(LIMIT_ERROR);
     const events = await prisma.factoryEvent.findMany({
+        where: { OR: [{ vault: null }, { vault: { in: await listedVaultAddresses() } }] },
         orderBy: { ledger: "desc" },
         take: limit,
     });
@@ -278,11 +343,25 @@ app.get("/events", async (req, res) => {
 });
 
 app.get("/vaults/:address/events", async (req, res) => {
+    const limit = limitParam(req.query.limit, MAX_LIMIT);
+    if (limit === null) return res.status(400).json(LIMIT_ERROR);
+    if (!(await isListedVault(req.params.address))) return res.status(404).json({ error: "vault not found" });
     const events = await prisma.factoryEvent.findMany({
         where: { vault: req.params.address },
         orderBy: { ledger: "desc" },
+        take: limit,
     });
     res.json(events.map(toFactoryEventJson));
+});
+
+// Anything that fell through is JSON too, and a handler that threw (Express 5
+// forwards a rejected async handler here) is logged in full and answered with
+// nothing but a status: the default handler would include the stack unless
+// NODE_ENV happened to be "production" (O-6).
+app.use((_req, res) => res.status(404).json({ error: "not found" }));
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error(`[api] ${req.method} ${req.originalUrl}:`, err);
+    res.status(500).json({ error: "internal error" });
 });
 
 const PORT = Number(process.env.PORT ?? 3001);

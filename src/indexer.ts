@@ -12,7 +12,8 @@ import {
     decodeAMMEvent,
 } from "./events";
 import {
-    getCurrentLedger,
+    fetchEvents,
+    getChainHealth,
     getEventsFor,
     getTokenSymbol,
     getVaultUnderlying,
@@ -27,12 +28,19 @@ import {
     TRADE_KINDS,
 } from "./fees";
 import { alreadyApplied, UNDECODED, undecodedPayload } from "./undecoded";
+import { marketNameFor, MAX_NAME_CHARS, MAX_SYMBOL_CHARS, retentionGap, sanitizeLabel } from "./cursor";
 
 const prisma = new PrismaClient();
-const FACTORY_ADDRESS = process.env.FACTORY_CONTRACT_ADDRESS!;
+// Read per sync, not at module load, so a `.env` edit takes effect on the next
+// poll of a long-running process rather than needing a restart to be noticed.
+const factoryAddress = (): string => {
+    const address = process.env.FACTORY_CONTRACT_ADDRESS;
+    if (!address) throw new Error("FACTORY_CONTRACT_ADDRESS is not set");
+    return address;
+};
 // The router is optional: without it the history is rebuilt from the yield
 // manager's and pool's events alone, as it was before the router was indexed.
-const ROUTER_ADDRESS = process.env.ROUTER_CONTRACT_ADDRESS || null;
+const routerAddress = (): string | null => process.env.ROUTER_CONTRACT_ADDRESS || null;
 
 function toJsonSafe(value: unknown): Prisma.InputJsonValue {
     return JSON.parse(
@@ -55,11 +63,19 @@ async function applyFactoryEvent(
         pool?: string;
     } = {};
     if (decoded.kind === "market_created") {
+        // Strings the vault chose are sanitised on the way in (O-7): they are
+        // shown to the curator and served by the API, and nothing on chain
+        // bounds their content or length.
         const underlying = await getVaultUnderlying(decoded.vault);
-        vaultSymbol =
-            underlying?.symbol ?? (await getTokenSymbol(decoded.vault));
+        const shortVault = decoded.vault.slice(0, 8);
+        vaultSymbol = sanitizeLabel(
+            underlying?.symbol ?? (await getTokenSymbol(decoded.vault)),
+            MAX_SYMBOL_CHARS,
+            shortVault,
+        );
         vaultMeta = {
-            underlyingSymbol: underlying?.symbol,
+            underlyingSymbol:
+                underlying === undefined ? undefined : sanitizeLabel(underlying.symbol, MAX_SYMBOL_CHARS, shortVault),
             underlyingAsset: underlying?.assetAddress,
             pool: await getVaultPool(decoded.vault),
         };
@@ -70,12 +86,15 @@ async function applyFactoryEvent(
 
         switch (decoded.kind) {
             case "market_created": {
-                const maturityDate = new Date(
-                    Number(decoded.market.maturity) * 1000,
-                )
-                    .toISOString()
-                    .slice(0, 10);
-                const marketName = `${vaultSymbol ?? decoded.vault.slice(0, 8)}-${maturityDate}`;
+                // The factory names the market itself (`bvXLM-23DEC2026`); the
+                // fallback only serves factories from before the name existed.
+                // Sanitised too: the factory builds the name from the vault's
+                // own symbol, so it is as much the vault's choice as the symbol.
+                const marketName = sanitizeLabel(
+                    marketNameFor(decoded.market, decoded.vault, vaultSymbol),
+                    MAX_NAME_CHARS,
+                    `${decoded.vault.slice(0, 8)}-${decoded.market.maturity}`,
+                );
                 // Written on update too, so a vault indexed before these
                 // columns existed gets backfilled on its next market.
                 await tx.vault.upsert({
@@ -325,15 +344,38 @@ export async function updateLpFeeApys() {
 }
 
 export async function syncEvents() {
+    const factory = factoryAddress();
+    const router = routerAddress();
     const state = await prisma.indexerState.upsert({
         where: { id: 1 },
         update: {},
         create: { id: 1 },
     });
+    const health = await getChainHealth();
 
-    const startLedger = state.lastLedger
-        ? state.lastLedger + 1
-        : Number(process.env.START_LEDGER ?? (await getCurrentLedger()));
+    // Nothing has closed since the last poll: don't ask the RPC for events.
+    if (state.lastLedger && state.lastLedger >= health.latestLedger) {
+        await prisma.indexerState.update({ where: { id: 1 }, data: { lastPolled: new Date() } });
+        return;
+    }
+
+    // An empty START_LEDGER means "from the tip", like an unset one.
+    const configuredStart = Number(process.env.START_LEDGER) || health.latestLedger;
+    let startLedger = state.lastLedger ? state.lastLedger + 1 : configuredStart;
+
+    // Fallen out of the RPC's retention window: whatever happened between the
+    // cursor and the oldest retained ledger cannot be fetched from this RPC.
+    // Jump to what is available and say so, rather than asking forever for a
+    // range the RPC no longer has (the 2026-09-09 failure mode).
+    const gap = retentionGap(startLedger, health.oldestLedger);
+    if (gap > 0) {
+        console.error(
+            `[retention] cursor ${startLedger} is ${gap} ledger(s) older than the RPC's oldest ` +
+                `ledger ${health.oldestLedger}; events in that range are unrecoverable from this RPC. ` +
+                `Resuming from ${health.oldestLedger}.`,
+        );
+        startLedger = health.oldestLedger;
+    }
 
     const markets = await prisma.market.findMany({
         select: { id: true, ym: true, pool: true },
@@ -346,19 +388,23 @@ export async function syncEvents() {
     const marketIds = new Set(markets.map((market) => market.id));
 
     const contractIds = [
-        FACTORY_ADDRESS,
-        ...(ROUTER_ADDRESS ? [ROUTER_ADDRESS] : []),
+        factory,
+        ...(router ? [router] : []),
         ...ymToMarket.keys(),
         ...poolToMarket.keys(),
     ];
-    const rawEvents = await getEventsFor(contractIds, startLedger);
-    rawEvents.sort((a, b) => a.ledger - b.ledger);
+    const batch = await fetchEvents(contractIds, startLedger);
+    const rawEvents = batch.events;
+    // Ledger order, then emission order within a ledger: ids are fixed-width
+    // TOIDs, so a plain string compare gives the order the chain emitted them.
+    // That way a market's creation is applied before a router event that names
+    // it in the same ledger.
+    rawEvents.sort((a, b) => a.ledger - b.ledger || a.id.localeCompare(b.id));
 
     console.log(
-        `[${new Date().toISOString()}] Fetched ${rawEvents.length} event(s) from ledger ${startLedger}`,
+        `[${new Date().toISOString()}] Fetched ${rawEvents.length} event(s) from ledger ${startLedger}` +
+            ` to ${batch.scannedTo} (tip ${batch.latestLedger})`,
     );
-
-    let highestLedger = startLedger;
 
     // A market's YM and pool emit their init events (pool_init carries the
     // market's APY/fee params) in the same ledger as market_created. They were
@@ -379,17 +425,20 @@ export async function syncEvents() {
         // that won't decode is kept raw (see recordUndecoded) and the loop moves
         // on; a failure applying a decoded one is transient and only logged.
         try {
-            if (contractId === FACTORY_ADDRESS) {
+            if (contractId === factory) {
                 const decoded = await decodeOrRecord(raw, decodeFactoryEvent, null);
                 if (!decoded) return;
                 await applyFactoryEvent(raw, decoded);
                 if (decoded.kind === "market_created") {
+                    const id = `${decoded.vault}:${decoded.market.maturity}`;
                     created.push({
                         ym: decoded.market.ym,
                         pool: decoded.market.pool,
-                        id: `${decoded.vault}:${decoded.market.maturity}`,
+                        id,
                         ledger: raw.ledger,
                     });
+                    // Router events later in this same batch may name it.
+                    marketIds.add(id);
                 }
             } else if (ymToMarket.has(contractId)) {
                 const market = ymToMarket.get(contractId)!;
@@ -399,7 +448,7 @@ export async function syncEvents() {
                 const market = poolToMarket.get(contractId)!;
                 const decoded = await decodeOrRecord(raw, decodeAMMEvent, { source: "amm", market });
                 if (decoded) await applyMarketEvent(raw, "amm", decoded, market);
-            } else if (ROUTER_ADDRESS && contractId === ROUTER_ADDRESS) {
+            } else if (router && contractId === router) {
                 // A router event names its market itself. One for a market this
                 // indexer doesn't know (created after this sync's market list was
                 // read, or on another factory) is skipped; the next sync's list
@@ -424,7 +473,6 @@ export async function syncEvents() {
     };
 
     for (const raw of rawEvents) {
-        highestLedger = Math.max(highestLedger, raw.ledger);
         await applyRaw(raw);
     }
 
@@ -438,21 +486,24 @@ export async function syncEvents() {
             newMarkets.flatMap((m) => [m.ym, m.pool]),
             Math.min(...newMarkets.map((m) => m.ledger)),
         );
-        catchUp.sort((a, b) => a.ledger - b.ledger);
-        // Deliberately leaves highestLedger alone: this fetch can reach past
-        // the main batch, and advancing the cursor would skip other contracts'
-        // events in that gap. Anything past it is re-fetched next poll and
-        // deduped.
+        catchUp.sort((a, b) => a.ledger - b.ledger || a.id.localeCompare(b.id));
+        // This fetch may reach past `batch.scannedTo`; anything beyond it is
+        // fetched again next poll and deduped by event id, so the cursor below
+        // is still only advanced to what the main batch covered for every
+        // watched contract.
         for (const raw of catchUp) {
             await applyRaw(raw);
         }
     }
 
+    // The cursor is the last ledger the RPC scanned for us, not the last event
+    // seen: a quiet poll therefore lands at the tip instead of creeping one
+    // ledger forward and re-reading the same span every five seconds.
     await prisma.indexerState.update({
         where: { id: 1 },
         data: {
             lastPolled: new Date(),
-            lastLedger: highestLedger,
+            lastLedger: batch.scannedTo,
         },
     });
 }

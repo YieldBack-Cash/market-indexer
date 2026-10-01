@@ -148,7 +148,7 @@ export interface MarketEventJson {
     ledger: number;
     ledgerClosedAt: string;
     source: MarketEventSource;
-    /** The event's topic (`swap_v_for_pt`, `deposit_asset`, `zap_in`, ...), or `undecoded`. */
+    /** The event's topic (`swap_v_for_pt`, `deposit_asset`, `zap_asset_for_pt`, ...), or `undecoded`. */
     type: string;
     txHash: string | null;
     contractId: string;

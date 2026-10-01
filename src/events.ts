@@ -166,9 +166,10 @@ export function decodeAMMEvent(raw: rpc.Api.EventResponse): DecodedAMMEvent {
     return decodeWith(EVENT_LAYOUTS.amm, "AMM event", raw);
 }
 
-/// The router's own record of a user action: the base-asset amounts a zap moved
-/// at the vault boundary (`zap_in` / `zap_out`), the routed YT trades, and the
-/// expired-market exits. Every one names its market by `vault` and `maturity`.
+/// The router's own record of a user action: one event per entrypoint, named
+/// after it (`zap_asset_for_pt`, `zap_yt_for_asset`, `swap_v_for_yt`,
+/// `exit_expired_to_asset`, ...), carrying the asset and the amounts that
+/// actually moved. Every one names its market by `vault` and `maturity`.
 export function decodeRouterEvent(raw: rpc.Api.EventResponse): DecodedRouterEvent {
     return decodeWith(EVENT_LAYOUTS.router, "router event", raw);
 }

@@ -281,3 +281,56 @@ describe("decodeAMMEvent", () => {
         });
     });
 });
+
+// ── the decoder's tolerances, and only those ─────────────────────────────────
+//
+// Two shapes from older contract builds are accepted by name: swaps without
+// the trailing fee fields, and market_created without the creator topic.
+// Anything else that departs from the generated layout must throw, so the
+// event is stored undecoded rather than written as a coherent, wrong row
+// (threat model O-11). Widen a tolerance and one of these fails.
+describe("the decoder accepts exactly two legacy shapes", () => {
+    const i128s = (values: bigint[]) => nativeToScVal(values, { type: "i128" });
+    const swapTopics = () => [
+        nativeToScVal("flash_swap_v", { type: "symbol" }),
+        nativeToScVal(addr(), { type: "address" }),
+        nativeToScVal(addr(), { type: "address" }),
+    ];
+
+    it("rejects a vec payload with one value too many", () => {
+        const event = fixtureEvent(swapTopics(), i128s([1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n]));
+        expect(() => decodeAMMEvent(event)).toThrow(/expected 7 data values, got 8/);
+    });
+
+    it("rejects a vec payload missing a field that is not a known late addition", () => {
+        const event = fixtureEvent(swapTopics(), i128s([1n, 2n, 3n, 4n]));
+        expect(() => decodeAMMEvent(event)).toThrow(/missing new_reserve_b/);
+    });
+
+    it("rejects a topic count that is not the one known prepend", () => {
+        const noTopics = fixtureEvent(
+            [nativeToScVal("market_created", { type: "symbol" })],
+            marketScVal({ name: "x", ym: addr(), pt: addr(), yt: addr(), pool: addr(), maturity: 1n, vault: addr() }),
+        );
+        expect(() => decodeFactoryEvent(noTopics)).toThrow(/expected 2 topics, got 0/);
+
+        const oneTopicSwap = fixtureEvent(
+            [nativeToScVal("flash_swap_v", { type: "symbol" }), nativeToScVal(addr(), { type: "address" })],
+            i128s([1n, 2n, 3n, 4n, 5n]),
+        );
+        expect(() => decodeAMMEvent(oneTopicSwap)).toThrow(/expected 2 topics, got 1/);
+    });
+
+    it("accepts market_created without the creator topic and reads vault from the data", () => {
+        const vault = addr();
+        const market: Market = { name: "old", ym: addr(), pt: addr(), yt: addr(), pool: addr(), maturity: 1n, vault };
+        const event = fixtureEvent(
+            [nativeToScVal("market_created", { type: "symbol" }), nativeToScVal(vault, { type: "address" })],
+            marketScVal(market),
+        );
+        const decoded = decodeFactoryEvent(event);
+        if (decoded.kind !== "market_created") throw new Error(`decoded as ${decoded.kind}`);
+        expect(decoded.vault).toBe(vault);
+        expect((decoded as { creator?: string }).creator).toBeUndefined();
+    });
+});

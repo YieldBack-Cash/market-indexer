@@ -334,37 +334,38 @@ export const EVENT_LAYOUTS = {
                 { name: "vault", in: "topic", type: "address" },
                 { name: "to", in: "topic", type: "address" },
                 { name: "maturity", in: "data", type: "u64" },
+                { name: "asset", in: "data", type: "address" },
                 { name: "lp_shares", in: "data", type: "i128" },
                 { name: "asset_out", in: "data", type: "i128" },
             ],
         },
 
-        // RoutedYtBuy
-        routed_yt_buy: {
+        // SwapVForYt
+        swap_v_for_yt: {
             format: "vec",
             params: [
                 { name: "vault", in: "topic", type: "address" },
                 { name: "to", in: "topic", type: "address" },
                 { name: "maturity", in: "data", type: "u64" },
+                { name: "v_in", in: "data", type: "i128" },
                 { name: "yt_out", in: "data", type: "i128" },
-                { name: "max_v_in", in: "data", type: "i128" },
             ],
         },
 
-        // RoutedYtSell
-        routed_yt_sell: {
+        // SwapYtForV
+        swap_yt_for_v: {
             format: "vec",
             params: [
                 { name: "vault", in: "topic", type: "address" },
                 { name: "to", in: "topic", type: "address" },
                 { name: "maturity", in: "data", type: "u64" },
                 { name: "yt_in", in: "data", type: "i128" },
-                { name: "min_v_out", in: "data", type: "i128" },
+                { name: "v_out", in: "data", type: "i128" },
             ],
         },
 
-        // ZappedIn
-        zap_in: {
+        // ZapAssetForLp
+        zap_asset_for_lp: {
             format: "vec",
             params: [
                 { name: "vault", in: "topic", type: "address" },
@@ -372,19 +373,99 @@ export const EVENT_LAYOUTS = {
                 { name: "maturity", in: "data", type: "u64" },
                 { name: "asset", in: "data", type: "address" },
                 { name: "asset_in", in: "data", type: "i128" },
-                { name: "shares_out", in: "data", type: "i128" },
+                { name: "pt_bought", in: "data", type: "i128" },
+                { name: "lp_out", in: "data", type: "i128" },
             ],
         },
 
-        // ZappedOut
-        zap_out: {
+        // ZapAssetForPt
+        zap_asset_for_pt: {
             format: "vec",
             params: [
                 { name: "vault", in: "topic", type: "address" },
                 { name: "to", in: "topic", type: "address" },
                 { name: "maturity", in: "data", type: "u64" },
                 { name: "asset", in: "data", type: "address" },
-                { name: "shares_in", in: "data", type: "i128" },
+                { name: "asset_in", in: "data", type: "i128" },
+                { name: "pt_out", in: "data", type: "i128" },
+            ],
+        },
+
+        // ZapAssetForSplit
+        zap_asset_for_split: {
+            format: "vec",
+            params: [
+                { name: "vault", in: "topic", type: "address" },
+                { name: "to", in: "topic", type: "address" },
+                { name: "maturity", in: "data", type: "u64" },
+                { name: "asset", in: "data", type: "address" },
+                { name: "asset_in", in: "data", type: "i128" },
+                { name: "tokens_out", in: "data", type: "i128" },
+            ],
+        },
+
+        // ZapAssetForYt
+        zap_asset_for_yt: {
+            format: "vec",
+            params: [
+                { name: "vault", in: "topic", type: "address" },
+                { name: "to", in: "topic", type: "address" },
+                { name: "maturity", in: "data", type: "u64" },
+                { name: "asset", in: "data", type: "address" },
+                { name: "asset_in", in: "data", type: "i128" },
+                { name: "yt_out", in: "data", type: "i128" },
+            ],
+        },
+
+        // ZapLpForAsset
+        zap_lp_for_asset: {
+            format: "vec",
+            params: [
+                { name: "vault", in: "topic", type: "address" },
+                { name: "to", in: "topic", type: "address" },
+                { name: "maturity", in: "data", type: "u64" },
+                { name: "asset", in: "data", type: "address" },
+                { name: "lp_in", in: "data", type: "i128" },
+                { name: "pt_sold", in: "data", type: "i128" },
+                { name: "asset_out", in: "data", type: "i128" },
+            ],
+        },
+
+        // ZapPtForAsset
+        zap_pt_for_asset: {
+            format: "vec",
+            params: [
+                { name: "vault", in: "topic", type: "address" },
+                { name: "to", in: "topic", type: "address" },
+                { name: "maturity", in: "data", type: "u64" },
+                { name: "asset", in: "data", type: "address" },
+                { name: "pt_in", in: "data", type: "i128" },
+                { name: "asset_out", in: "data", type: "i128" },
+            ],
+        },
+
+        // ZapSplitForAsset
+        zap_split_for_asset: {
+            format: "vec",
+            params: [
+                { name: "vault", in: "topic", type: "address" },
+                { name: "to", in: "topic", type: "address" },
+                { name: "maturity", in: "data", type: "u64" },
+                { name: "asset", in: "data", type: "address" },
+                { name: "tokens_in", in: "data", type: "i128" },
+                { name: "asset_out", in: "data", type: "i128" },
+            ],
+        },
+
+        // ZapYtForAsset
+        zap_yt_for_asset: {
+            format: "vec",
+            params: [
+                { name: "vault", in: "topic", type: "address" },
+                { name: "to", in: "topic", type: "address" },
+                { name: "maturity", in: "data", type: "u64" },
+                { name: "asset", in: "data", type: "address" },
+                { name: "yt_in", in: "data", type: "i128" },
                 { name: "asset_out", in: "data", type: "i128" },
             ],
         },

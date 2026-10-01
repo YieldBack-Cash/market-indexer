@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { userInfo } from "node:os";
 import { PrismaClient, Market, Protocol } from "@prisma/client";
 import {
     setListed,
@@ -38,6 +39,12 @@ const USAGE = `Usage:
   <id> is a slug you choose, versioned with the protocol: blendv2, xoxno.
 `;
 
+// Recorded as `curatedBy` on every write this CLI makes. The API records the
+// curator whose key was used; here it is whoever is at the keyboard.
+function curator(): string {
+    return process.env.CURATOR || userInfo().username;
+}
+
 function printMarkets(markets: Market[]) {
     if (markets.length === 0) {
         console.log("(none)");
@@ -62,9 +69,9 @@ function printProtocolFields(p: Protocol, indent: string) {
     }
 }
 
-function printCuration(row: { curatedAt: Date | null; curationNote: string | null }) {
+function printCuration(row: { curatedAt: Date | null; curationNote: string | null; curatedBy: string | null }) {
     console.log(
-        `  curatedAt=${row.curatedAt?.toISOString() ?? "—"}` +
+        `  curatedAt=${row.curatedAt?.toISOString() ?? "—"} curatedBy=${row.curatedBy ?? "—"}` +
             (row.curationNote ? `\n  note: ${row.curationNote}` : ""),
     );
 }
@@ -93,7 +100,7 @@ async function main() {
 
             const listed = command === "approve";
             try {
-                const market = await setListed(prisma, id, listed, note);
+                const market = await setListed(prisma, id, listed, note, curator());
                 console.log(
                     `${listed ? "listed" : "hidden"}: ${market.id} (${market.name})`,
                 );
@@ -177,7 +184,7 @@ async function main() {
             }
 
             try {
-                await createProtocol(prisma, id, { name: parsed.value.name });
+                await createProtocol(prisma, id, { name: parsed.value.name }, undefined, curator());
                 console.log(`created protocol ${id}`);
                 return 0;
             } catch (err) {
@@ -207,7 +214,7 @@ async function main() {
             }
 
             try {
-                await setProtocolMetadata(prisma, id, parsed.value);
+                await setProtocolMetadata(prisma, id, parsed.value, undefined, curator());
                 console.log(`${id}: set ${field}`);
                 return 0;
             } catch (err) {
@@ -296,7 +303,7 @@ async function main() {
             }
 
             try {
-                await setVaultMetadata(prisma, id, parsed.value);
+                await setVaultMetadata(prisma, id, parsed.value, undefined, curator());
                 console.log(`${id}: set ${field}`);
                 return 0;
             } catch (err) {

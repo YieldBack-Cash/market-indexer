@@ -242,6 +242,7 @@ describe("flattenProtocol", () => {
         auditUrl: null,
         curatedAt: new Date(0),
         curationNote: "internal",
+        curatedBy: "alice",
     };
 
     it("projects the row onto the flat vault field names the frontend reads", () => {

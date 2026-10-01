@@ -38,6 +38,7 @@ model Vault {
   protocol     Protocol? @relation(fields: [protocolId], references: [id])
   curatedAt    DateTime?
   curationNote String?
+  curatedBy    String?
 
   @@index([protocolId])
 }
@@ -59,6 +60,7 @@ model Protocol {
   auditUrl     String?
   curatedAt    DateTime?
   curationNote String?
+  curatedBy    String?
 }
 
 model Market {
@@ -75,6 +77,7 @@ model Market {
   listed            Boolean   @default(false)
   curatedAt         DateTime?
   curationNote      String?
+  curatedBy         String?
   currentApy        BigInt?
   apyMin            BigInt?
   apyMax            BigInt?

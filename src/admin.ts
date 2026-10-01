@@ -1,7 +1,7 @@
 import express, { Router, Request, Response, NextFunction } from "express";
 import { PrismaClient } from "@prisma/client";
 import rateLimit from "express-rate-limit";
-import { timingSafeEqual } from "node:crypto";
+import { matchAdminKey, parseAdminKeys } from "./adminKeys";
 import {
     setListed,
     isNotFound,
@@ -17,25 +17,27 @@ import {
 
 const MAX_NOTE_LENGTH = 500;
 
-// Fails closed: with no ADMIN_API_KEY configured the admin surface is disabled
-// outright rather than left open.
+// Fails closed: with no curator credentials configured the admin surface is
+// disabled outright rather than left open. A request that passes carries the
+// curator's name in `res.locals.curator`, and every write records it.
 function requireAdminKey(req: Request, res: Response, next: NextFunction) {
-    const expected = process.env.ADMIN_API_KEY;
-    if (!expected) {
+    // Read per request, not at start-up, so a key can be rotated or a curator
+    // added without restarting the API.
+    const keys = parseAdminKeys(process.env);
+    if (keys.length === 0) {
         return res.status(503).json({ error: "admin API not configured" });
     }
 
-    const provided = req.get("x-admin-key") ?? "";
-    const a = Buffer.from(provided);
-    const b = Buffer.from(expected);
-    // timingSafeEqual throws on a length mismatch, so check that first. The
-    // length itself leaks, which is acceptable for a random shared secret.
-    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    const curator = matchAdminKey(keys, req.get("x-admin-key") ?? "");
+    if (curator === null) {
         return res.status(401).json({ error: "unauthorized" });
     }
 
+    res.locals.curator = curator;
     next();
 }
+
+const curatorOf = (res: Response): string => res.locals.curator as string;
 
 function toAdminJson(row: Record<string, unknown>) {
     // Curation notes stay on this side of the wall, but BigInt still needs
@@ -95,7 +97,7 @@ export function adminRouter(prisma: PrismaClient): Router {
         if (badNote) return res.status(400).json({ error: badNote });
 
         try {
-            const market = await setListed(prisma, req.params.id, listed, note);
+            const market = await setListed(prisma, req.params.id, listed, note, curatorOf(res));
             res.json(toAdminJson(market));
         } catch (err) {
             if (isNotFound(err)) {
@@ -130,6 +132,7 @@ export function adminRouter(prisma: PrismaClient): Router {
                 req.params.address,
                 parsed.value,
                 note,
+                curatorOf(res),
             );
             res.json(toAdminJson(vault));
         } catch (err) {
@@ -180,6 +183,7 @@ export function adminRouter(prisma: PrismaClient): Router {
                 id,
                 { ...parsed.value, name: parsed.value.name },
                 note,
+                curatorOf(res),
             );
             res.status(201).json(toAdminJson(protocol));
         } catch (err) {
@@ -208,6 +212,7 @@ export function adminRouter(prisma: PrismaClient): Router {
                 req.params.id,
                 parsed.value,
                 note,
+                curatorOf(res),
             );
             res.json(toAdminJson(protocol));
         } catch (err) {

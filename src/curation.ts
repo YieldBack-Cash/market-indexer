@@ -26,7 +26,8 @@ export async function setListed(
     prisma: PrismaClient,
     id: string,
     listed: boolean,
-    note?: string,
+    note: string | undefined,
+    by: string,
 ) {
     return prisma.market.update({
         where: { id },
@@ -34,6 +35,7 @@ export async function setListed(
             listed,
             curatedAt: new Date(),
             curationNote: note ?? null,
+            curatedBy: by,
         },
     });
 }
@@ -184,13 +186,15 @@ export async function setVaultMetadata(
     prisma: PrismaClient,
     address: string,
     fields: VaultMetadata,
-    note?: string,
+    note: string | undefined,
+    by: string,
 ) {
     return prisma.vault.update({
         where: { address },
         data: {
             ...fields,
             curatedAt: new Date(),
+            curatedBy: by,
             ...(note === undefined ? {} : { curationNote: note }),
         },
     });
@@ -245,13 +249,15 @@ export async function createProtocol(
     prisma: PrismaClient,
     id: string,
     fields: ProtocolMetadata & { name: string },
-    note?: string,
+    note: string | undefined,
+    by: string,
 ) {
     return prisma.protocol.create({
         data: {
             id,
             ...fields,
             curatedAt: new Date(),
+            curatedBy: by,
             ...(note === undefined ? {} : { curationNote: note }),
         },
     });
@@ -261,13 +267,15 @@ export async function setProtocolMetadata(
     prisma: PrismaClient,
     id: string,
     fields: ProtocolMetadata,
-    note?: string,
+    note: string | undefined,
+    by: string,
 ) {
     return prisma.protocol.update({
         where: { id },
         data: {
             ...fields,
             curatedAt: new Date(),
+            curatedBy: by,
             ...(note === undefined ? {} : { curationNote: note }),
         },
     });

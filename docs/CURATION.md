@@ -23,12 +23,18 @@ render with the frontend's own fallbacks, so fill both in before approving its m
 
 ## Setup
 
-Curation needs `ADMIN_API_KEY` set on the API process. **If it is unset, every `/admin` route
-returns 503** — the admin surface fails closed rather than open.
+Curation needs `ADMIN_API_KEYS` set on the API process: one credential per curator, as
+`name=secret`, comma-separated. The name is recorded as `curatedBy` on every listing and
+metadata change, so a decision can be traced to the person who made it. **If it is unset,
+every `/admin` route returns 503** — the admin surface fails closed rather than open.
 
 ```bash
-openssl rand -hex 32     # put the result in .env as ADMIN_API_KEY
+openssl rand -hex 32     # one per curator; .env: ADMIN_API_KEYS="alice=<hex>,bob=<hex>"
 ```
+
+The older single `ADMIN_API_KEY` still works and is recorded as the curator `admin`; split it
+into named keys before more than one person curates. The CLI (`npm run curate`) records the
+operating-system user name, or `CURATOR` from the environment.
 
 The CLI talks to Postgres directly and needs only `DATABASE_URL`, so it works even when the API
 is down.
@@ -63,8 +69,8 @@ npm run curate -- approve CVAULT...:1790000000 "vetted, Blend XLM vault"
 npm run curate -- hide    CVAULT...:1790000000 "suspected spoof of the XLM market"
 ```
 
-The trailing note is optional and stored in `Market.curationNote`. **Notes are internal** — the
-public serializer strips `curationNote` from every response. Write freely.
+The trailing note is optional and stored in `Market.curationNote`, beside `curatedBy`. **Both
+are internal** — the public serializer strips them from every response. Write freely.
 
 The market id is the composite `` `${vault}:${maturity}` ``, exactly as `pending` prints it.
 
@@ -72,7 +78,7 @@ The market id is the composite `` `${vault}:${maturity}` ``, exactly as `pending
 
 ```bash
 curl -X PATCH "$API/admin/markets/CVAULT...:1790000000" \
-  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  -H "X-Admin-Key: $MY_CURATOR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"listed": true, "note": "vetted, Blend XLM vault"}'
 ```
@@ -123,7 +129,7 @@ second protocol.
 
 ```bash
 curl -X POST "$API/admin/protocols" \
-  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  -H "X-Admin-Key: $MY_CURATOR_KEY" \
   -H "Content-Type: application/json" \
   -d '{
         "id": "blendv2",
@@ -178,7 +184,7 @@ One field per invocation. Over HTTP you can set several at once:
 
 ```bash
 curl -X PATCH "$API/admin/vaults/CVAULT..." \
-  -H "X-Admin-Key: $ADMIN_API_KEY" \
+  -H "X-Admin-Key: $MY_CURATOR_KEY" \
   -H "Content-Type: application/json" \
   -d '{
         "protocolId": "blendv2",
@@ -257,8 +263,10 @@ There is no public way to fetch unlisted markets. The review queue is the key-ga
 
 ## Troubleshooting
 
-**Everything returns 503.** `ADMIN_API_KEY` is unset on the API process. This is the fail-closed
-path; a supplied key still gets 503, since there is nothing to compare it against.
+**Everything returns 503.** No curator credentials are configured on the API process. This is the
+fail-closed path; a supplied key still gets 503, since there is nothing to compare it against.
+A malformed `ADMIN_API_KEYS` entry (no `=`, a short secret, a name listed twice) is an error on
+every request rather than a silently skipped curator; the message names the entry.
 
 **401 with what looks like the right key.** The comparison is exact and constant-time — check for
 a trailing newline from however you exported it.
